@@ -398,6 +398,49 @@ func (h *handler) doTokenExchange(req api.Context, oauthClient v1.OAuthClient, r
 		})
 	}
 
+	// Check if this is a request for a SystemMCPServer resource
+	// Resource format: {baseURL}/system-mcp-connect/{systemMCPServerID}
+	if _, systemServerID, ok := strings.Cut(resource, "/system-mcp-connect/"); ok && system.IsSystemMCPServerID(systemServerID) {
+		// Verify the SystemMCPServer exists
+		var systemServer v1.SystemMCPServer
+		if err := req.Get(&systemServer, systemServerID); err != nil {
+			return types.NewErrBadRequest("%v", Error{
+				Code:        ErrInvalidRequest,
+				Description: "failed to retrieve SystemMCPServer " + systemServerID,
+			})
+		}
+
+		// Create a new token scoped to the SystemMCPServer
+		now := time.Now()
+		newTokenCtx := &persistent.TokenContext{
+			Audience:  resource,
+			IssuedAt:  now,
+			ExpiresAt: now.Add(tokenExpiration),
+			UserID:    userID,
+			MCPID:     systemServerID,
+			// Preserve auth provider info from original token
+			AuthProviderName:      tokenCtx.AuthProviderName,
+			AuthProviderNamespace: tokenCtx.AuthProviderNamespace,
+			AuthProviderUserID:    tokenCtx.AuthProviderUserID,
+		}
+
+		token, err := h.tokenService.NewToken(req.Context(), *newTokenCtx)
+		if err != nil {
+			log.Errorf("failed to create token for SystemMCPServer %s: %v", systemServerID, err)
+			return types.NewErrBadRequest("%v", Error{
+				Code:        ErrServerError,
+				Description: "failed to create token",
+			})
+		}
+
+		return req.Write(TokenExchangeResponse{
+			AccessToken:     token,
+			IssuedTokenType: tokenTypeAccessToken,
+			TokenType:       "Bearer",
+			ExpiresIn:       max(int(time.Until(newTokenCtx.ExpiresAt).Seconds()), 0),
+		})
+	}
+
 	// Ephemeral OAuth clients don't have an MCP server in the database. They are for generating tool previews.
 	if !oauthClient.Spec.Ephemeral && system.IsMCPServerID(mcpID) {
 		var mcpServer v1.MCPServer

@@ -18,11 +18,32 @@ type MCPWebhookValidationManifest struct {
 	Secret    string       `json:"secret,omitempty"`
 	Selectors MCPSelectors `json:"selectors,omitempty"`
 	Disabled  bool         `json:"disabled,omitempty"`
+
+	// New fields for SystemMCPServer hook
+	SystemMCPServerName string `json:"systemMCPServerName,omitempty"` // ID of the SystemMCPServer (e.g., "sms1abc123")
+	ToolName            string `json:"toolName,omitempty"`            // Name of the tool to call within that server
 }
 
 func (m *MCPWebhookValidationManifest) Validate() error {
-	if m.URL == "" {
-		return fmt.Errorf("webhook URL is required")
+	// Must specify either URL or SystemMCPServer, but not both
+	hasURL := m.URL != ""
+	hasSystemServer := m.SystemMCPServerName != ""
+
+	if !hasURL && !hasSystemServer {
+		return fmt.Errorf("either url or systemMCPServerName is required")
+	}
+	if hasURL && hasSystemServer {
+		return fmt.Errorf("cannot specify both url and systemMCPServerName")
+	}
+
+	// If using SystemMCPServer, toolName is required
+	if hasSystemServer && m.ToolName == "" {
+		return fmt.Errorf("toolName is required when using systemMCPServerName")
+	}
+
+	// Secret is only valid with URL
+	if hasSystemServer && m.Secret != "" {
+		return fmt.Errorf("secret cannot be used with systemMCPServerName")
 	}
 
 	for _, resource := range m.Resources {

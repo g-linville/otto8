@@ -28,6 +28,15 @@ type Webhook struct {
 	Name, DisplayName  string
 	URL, Secret, Image string
 	Definitions        []string
+
+	// New fields for SystemMCPServer hooks
+	SystemMCPServerName string // If non-empty, this is a SystemMCPServer hook
+	ToolName            string // Tool to call within the SystemMCPServer
+}
+
+// IsSystemMCPServerHook returns true if this webhook targets a SystemMCPServer tool
+func (w Webhook) IsSystemMCPServerHook() bool {
+	return w.SystemMCPServerName != ""
 }
 
 func (wh *WebhookHelper) GetWebhooksForMCPServer(ctx context.Context, gptClient *gptscript.GPTScript, serverConfig ServerConfig) ([]Webhook, error) {
@@ -72,39 +81,54 @@ func (wh *WebhookHelper) appendWebhooks(ctx context.Context, gptClient *gptscrip
 	for _, mwv := range objs {
 		res, ok := mwv.(*v1.MCPWebhookValidation)
 		if ok && res.Namespace == namespace && !res.Spec.Manifest.Disabled {
-			url := res.Spec.Manifest.URL
-			if _, seen := seen[url]; seen {
+			manifest := res.Spec.Manifest
+
+			// Use different key for deduplication based on hook type
+			var seenKey string
+			if manifest.SystemMCPServerName != "" {
+				seenKey = fmt.Sprintf("system:%s/%s", manifest.SystemMCPServerName, manifest.ToolName)
+			} else {
+				seenKey = manifest.URL
+			}
+
+			if _, seen := seen[seenKey]; seen {
 				continue
 			}
+			seen[seenKey] = struct{}{}
 
-			seen[url] = struct{}{}
-			if credEnv == nil {
-				// Only reveal the credential once
-				cred, err := gptClient.RevealCredential(ctx, []string{system.MCPWebhookValidationCredentialContext}, res.Name)
-				if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
-					continue
-				}
-
-				credEnv = cred.Env
-				if credEnv == nil {
-					// Set this to something non-nil so we don't fetch the credential again.
-					credEnv = make(map[string]string)
-				}
-			}
-
-			displayName := res.Spec.Manifest.Name
+			displayName := manifest.Name
 			if displayName == "" {
 				displayName = res.Name
 			}
 
-			result = append(result, Webhook{
+			webhook := Webhook{
 				Name:        res.Name,
 				DisplayName: displayName,
-				URL:         url,
-				Secret:      credEnv["secret"],
-				Image:       wh.defaultBaseImage,
-				Definitions: res.Spec.Manifest.Selectors.Strings(),
-			})
+				Definitions: manifest.Selectors.Strings(),
+			}
+
+			if manifest.SystemMCPServerName != "" {
+				// SystemMCPServer hook - no URL, secret, or image needed
+				webhook.SystemMCPServerName = manifest.SystemMCPServerName
+				webhook.ToolName = manifest.ToolName
+			} else {
+				// Traditional URL webhook
+				if credEnv == nil {
+					cred, err := gptClient.RevealCredential(ctx, []string{system.MCPWebhookValidationCredentialContext}, res.Name)
+					if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+						continue
+					}
+					credEnv = cred.Env
+					if credEnv == nil {
+						credEnv = make(map[string]string)
+					}
+				}
+				webhook.URL = manifest.URL
+				webhook.Secret = credEnv["secret"]
+				webhook.Image = wh.defaultBaseImage
+			}
+
+			result = append(result, webhook)
 		}
 	}
 

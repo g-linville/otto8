@@ -174,6 +174,25 @@ func webhookToServerConfig(webhook Webhook, baseImage, mcpServerName, userID, sc
 	}, nil
 }
 
+// SystemMCPServerHookConfig holds the configuration needed for a SystemMCPServer hook
+type SystemMCPServerHookConfig struct {
+	ServerName string // SystemMCPServer name (ID)
+	ToolName   string // Tool to call
+	URL        string // URL to reach the SystemMCPServer (populated at deployment time)
+}
+
+// SeparateWebhooks splits webhooks into URL-based and SystemMCPServer-based
+func SeparateWebhooks(webhooks []Webhook) (urlWebhooks []Webhook, systemHooks []Webhook) {
+	for _, w := range webhooks {
+		if w.IsSystemMCPServerHook() {
+			systemHooks = append(systemHooks, w)
+		} else {
+			urlWebhooks = append(urlWebhooks, w)
+		}
+	}
+	return
+}
+
 func constructNanobotYAMLForCompositeServer(servers []ComponentServer) (string, error) {
 	mcpServers := make(map[string]nanobotConfigMCPServer, len(servers))
 	names := make([]string, 0, len(servers))
@@ -215,22 +234,43 @@ func constructNanobotYAMLForCompositeServer(servers []ComponentServer) (string, 
 	return string(data), nil
 }
 
-func constructNanobotYAMLForServer(name, url, command string, args []string, env, headers map[string]string, webhooks []Webhook) (string, error) {
+func constructNanobotYAMLForServer(name, url, command string, args []string, env, headers map[string]string, webhooks []Webhook, systemHooks []SystemMCPServerHookConfig) (string, error) {
 	replacer := strings.NewReplacer("/", "-", ":", "-", "?", "-")
 
-	webhookDefinitions := make(map[string][]string, len(webhooks))
-	mcpServers := make(map[string]nanobotConfigMCPServer, len(webhooks)+1)
+	webhookDefinitions := make(map[string][]string, len(webhooks)+len(systemHooks))
+	mcpServers := make(map[string]nanobotConfigMCPServer, len(webhooks)+len(systemHooks)+1)
 
+	// Handle traditional URL webhooks
 	for _, webhook := range webhooks {
-		name := replacer.Replace(webhook.DisplayName)
-		if name == "" {
-			name = replacer.Replace(webhook.Name)
+		if webhook.IsSystemMCPServerHook() {
+			continue // Handled separately
 		}
-		mcpServers[name] = nanobotConfigMCPServer{
+		wName := replacer.Replace(webhook.DisplayName)
+		if wName == "" {
+			wName = replacer.Replace(webhook.Name)
+		}
+		mcpServers[wName] = nanobotConfigMCPServer{
 			BaseURL: webhook.URL,
 		}
 		for _, def := range webhook.Definitions {
-			webhookDefinitions[def] = append(webhookDefinitions[def], fmt.Sprintf("%s/%s", name, webhookToolName))
+			webhookDefinitions[def] = append(webhookDefinitions[def], fmt.Sprintf("%s/%s", wName, webhookToolName))
+		}
+	}
+
+	// Handle SystemMCPServer hooks
+	for _, hook := range systemHooks {
+		serverName := replacer.Replace(hook.ServerName)
+		mcpServers[serverName] = nanobotConfigMCPServer{
+			BaseURL: hook.URL,
+			// Note: No headers here - Nanobot will use token exchange to get auth
+		}
+		// Find the webhook with matching SystemMCPServerName to get definitions
+		for _, webhook := range webhooks {
+			if webhook.SystemMCPServerName == hook.ServerName {
+				for _, def := range webhook.Definitions {
+					webhookDefinitions[def] = append(webhookDefinitions[def], fmt.Sprintf("%s/%s", serverName, hook.ToolName))
+				}
+			}
 		}
 	}
 

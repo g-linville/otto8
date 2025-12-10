@@ -158,14 +158,30 @@ func (d *dockerBackend) deployServer(ctx context.Context, server ServerConfig, _
 		return nil
 	}
 
-	_, _, err = d.createAndStartContainer(ctx, server, "", configHash, nil)
+	_, _, err = d.createAndStartContainer(ctx, server, "", configHash, nil, nil)
 	return err
 }
 
 func (d *dockerBackend) ensureServerDeployment(ctx context.Context, server ServerConfig, webhooks []Webhook) (ServerConfig, error) {
 	serverName := server.MCPServerName
+
+	// Separate URL webhooks from SystemMCPServer hooks
+	urlWebhooks, systemHooks := SeparateWebhooks(webhooks)
+
 	// Copy the webhooks so we can change the URL without that affecting the original slice.
-	transformedWebhooks := slices.Clone(webhooks)
+	transformedWebhooks := slices.Clone(urlWebhooks)
+
+	// Build SystemMCPServer hook configs with URLs
+	systemHookConfigs := make([]SystemMCPServerHookConfig, 0, len(systemHooks))
+	for _, hook := range systemHooks {
+		// Get the SystemMCPServer's connect URL
+		url := fmt.Sprintf("%s/system-mcp-connect/%s", d.hostBaseURL, hook.SystemMCPServerName)
+		systemHookConfigs = append(systemHookConfigs, SystemMCPServerHookConfig{
+			ServerName: hook.SystemMCPServerName,
+			ToolName:   hook.ToolName,
+			URL:        url,
+		})
+	}
 
 	// List the currently deployed webhooks so we can delete any that are no longer needed.
 	currentWebhooks, err := d.getWebhookContainers(ctx, server.MCPServerName)
@@ -178,13 +194,14 @@ func (d *dockerBackend) ensureServerDeployment(ctx context.Context, server Serve
 		existingWebhooks[strings.TrimPrefix(webhook.Names[0], "/")] = struct{}{}
 	}
 
+	// Only deploy webhook containers for URL webhooks (not SystemMCPServer hooks)
 	for i, webhook := range transformedWebhooks {
 		webhook.URL = localhostURLRegexp.ReplaceAllString(webhook.URL, d.hostBaseURL)
 
 		c, err := webhookToServerConfig(webhook, d.webhookBaseImage, server.MCPServerName, server.UserID, server.Scope, defaultContainerPort)
 		if err != nil {
 			return ServerConfig{}, fmt.Errorf("failed to ensure webhook deployment: %w", err)
-		} else if c, err = d.ensureDeployment(ctx, c, server.MCPServerName, d.containerEnv, nil); err != nil {
+		} else if c, err = d.ensureDeployment(ctx, c, server.MCPServerName, d.containerEnv, nil, nil); err != nil {
 			return ServerConfig{}, fmt.Errorf("failed to ensure server deployment: %w", err)
 		} else if existing, err := d.getContainer(ctx, c.MCPServerName); err != nil {
 			return ServerConfig{}, fmt.Errorf("failed to build server config: %w", err)
@@ -208,7 +225,7 @@ func (d *dockerBackend) ensureServerDeployment(ctx context.Context, server Serve
 
 	if server.Runtime != otypes.RuntimeRemote {
 		// For non-remote runtimes, we deploy a shim that handles webhooks.
-		server, err = d.ensureDeployment(ctx, server, "", true, nil)
+		server, err = d.ensureDeployment(ctx, server, "", true, nil, nil)
 		if err != nil {
 			return ServerConfig{}, err
 		}
@@ -218,13 +235,14 @@ func (d *dockerBackend) ensureServerDeployment(ctx context.Context, server Serve
 		server.URL = localhostURLRegexp.ReplaceAllString(server.URL, d.hostBaseURL)
 	}
 
-	server, err = d.ensureDeployment(ctx, server, "", d.containerEnv, transformedWebhooks)
+	// Pass both URL webhooks and system hook configs to deployment
+	server, err = d.ensureDeployment(ctx, server, "", d.containerEnv, transformedWebhooks, systemHookConfigs)
 	// Ensure the name is the same as what it was when we started.
 	server.MCPServerName = serverName
 	return server, err
 }
 
-func (d *dockerBackend) ensureDeployment(ctx context.Context, server ServerConfig, mcpServerName string, containerEnv bool, webhooks []Webhook) (ServerConfig, error) {
+func (d *dockerBackend) ensureDeployment(ctx context.Context, server ServerConfig, mcpServerName string, containerEnv bool, webhooks []Webhook, systemHooks []SystemMCPServerHookConfig) (ServerConfig, error) {
 	server.TokenExchangeEndpoint = localhostURLRegexp.ReplaceAllString(server.TokenExchangeEndpoint, d.hostBaseURL)
 	server.AuditLogEndpoint = localhostURLRegexp.ReplaceAllString(server.AuditLogEndpoint, d.hostBaseURL)
 
@@ -300,7 +318,7 @@ func (d *dockerBackend) ensureDeployment(ctx context.Context, server ServerConfi
 	}
 
 	// Create new container
-	return d.createAndStartAndWaitForContainer(ctx, server, mcpServerName, configHash, containerEnv, webhooks)
+	return d.createAndStartAndWaitForContainer(ctx, server, mcpServerName, configHash, containerEnv, webhooks, systemHooks)
 }
 
 func (d *dockerBackend) transformConfig(ctx context.Context, serverConfig ServerConfig) (*ServerConfig, error) {
@@ -606,8 +624,8 @@ func (d *dockerBackend) buildServerConfig(server ServerConfig, c *container.Summ
 	}, nil
 }
 
-func (d *dockerBackend) createAndStartAndWaitForContainer(ctx context.Context, server ServerConfig, mcpServerName, configHash string, containerEnv bool, webhooks []Webhook) (retConfig ServerConfig, retErr error) {
-	containerID, containerPort, err := d.createAndStartContainer(ctx, server, mcpServerName, configHash, webhooks)
+func (d *dockerBackend) createAndStartAndWaitForContainer(ctx context.Context, server ServerConfig, mcpServerName, configHash string, containerEnv bool, webhooks []Webhook, systemHooks []SystemMCPServerHookConfig) (retConfig ServerConfig, retErr error) {
+	containerID, containerPort, err := d.createAndStartContainer(ctx, server, mcpServerName, configHash, webhooks, systemHooks)
 	if err != nil {
 		return ServerConfig{}, err
 	}
@@ -629,7 +647,7 @@ func (d *dockerBackend) createAndStartAndWaitForContainer(ctx context.Context, s
 	return d.buildServerConfig(server, c, containerPort, containerEnv)
 }
 
-func (d *dockerBackend) createAndStartContainer(ctx context.Context, server ServerConfig, mcpServerName, configHash string, webhooks []Webhook) (string, int, error) {
+func (d *dockerBackend) createAndStartContainer(ctx context.Context, server ServerConfig, mcpServerName, configHash string, webhooks []Webhook, systemHooks []SystemMCPServerHookConfig) (string, int, error) {
 	var (
 		volumeMounts  []mount.Mount
 		entrypoint    []string
@@ -700,7 +718,7 @@ func (d *dockerBackend) createAndStartContainer(ctx context.Context, server Serv
 		containerPort = defaultContainerPort
 
 		// Prepare nanobot configuration
-		nanobotVolumeName, err := d.prepareNanobotConfig(ctx, server, fileEnvVars, webhooks)
+		nanobotVolumeName, err := d.prepareNanobotConfig(ctx, server, fileEnvVars, webhooks, systemHooks)
 		if err != nil {
 			return "", 0, fmt.Errorf("failed to prepare nanobot config: %w", err)
 		}
@@ -1039,7 +1057,7 @@ func (d *dockerBackend) pullImage(ctx context.Context, imageName string, ifNotEx
 }
 
 // prepareNanobotConfig creates a volume with nanobot YAML configuration for UVX/NPX runtimes
-func (d *dockerBackend) prepareNanobotConfig(ctx context.Context, server ServerConfig, envVars map[string]string, webhooks []Webhook) (string, error) {
+func (d *dockerBackend) prepareNanobotConfig(ctx context.Context, server ServerConfig, envVars map[string]string, webhooks []Webhook, systemHooks []SystemMCPServerHookConfig) (string, error) {
 	// Create all environment variables map
 	allEnvVars := make(map[string]string, len(server.Env)+len(envVars))
 	headers := make(map[string]string, len(server.Headers))
@@ -1066,7 +1084,7 @@ func (d *dockerBackend) prepareNanobotConfig(ctx context.Context, server ServerC
 	if server.Runtime == otypes.RuntimeComposite {
 		nanobotYAML, err = constructNanobotYAMLForCompositeServer(server.Components)
 	} else {
-		nanobotYAML, err = constructNanobotYAMLForServer(server.MCPServerDisplayName, server.URL, server.Command, server.Args, allEnvVars, headers, webhooks)
+		nanobotYAML, err = constructNanobotYAMLForServer(server.MCPServerDisplayName, server.URL, server.Command, server.Args, allEnvVars, headers, webhooks, systemHooks)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to construct nanobot YAML: %w", err)

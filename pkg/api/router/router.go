@@ -69,7 +69,7 @@ func Router(ctx context.Context, services *services.Services) (http.Handler, err
 	mcp := handlers.NewMCPHandler(services.MCPLoader, services.AccessControlRuleHelper, oauthChecker, services.PersistentTokenServer.EncodedJWKS, services.ServerURL)
 	projectMCP := handlers.NewProjectMCPHandler(services.MCPLoader, services.AccessControlRuleHelper, oauthChecker, services.PersistentTokenServer.EncodedJWKS, services.ServerURL, services.InternalServerURL)
 	projectInvitations := handlers.NewProjectInvitationHandler()
-	mcpGateway := mcpgateway.NewHandler(services.StorageClient, services.MCPLoader, services.WebhookHelper, services.PersistentTokenServer.EncodedJWKS)
+	mcpGateway := mcpgateway.NewHandler(services.StorageClient, services.MCPLoader, services.WebhookHelper, services.PersistentTokenServer.EncodedJWKS, services.PersistentTokenServer, services.ServerURL)
 	mcpAuditLogs := mcpgateway.NewAuditLogHandler()
 	auditLogExports := handlers.NewAuditLogExportHandler(services.GPTClient)
 	serverInstances := handlers.NewServerInstancesHandler(services.AccessControlRuleHelper, services.ServerURL)
@@ -587,6 +587,7 @@ func Router(ctx context.Context, services *services.Services) (http.Handler, err
 
 	// MCP Gateway Endpoints
 	mux.HandleFunc("/mcp-connect/{mcp_id}", mcpGateway.Proxy)
+	mux.HandleFunc("/system-mcp-connect/{id}", mcpGateway.SystemMCPServerConnect)
 
 	// Registry API
 	mux.HandleFunc("GET /v0.1/servers", registryHandler.ListServers)
