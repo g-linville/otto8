@@ -746,6 +746,10 @@ func (m *MCPHandler) SetTools(req api.Context) error {
 	if catalogName == "" {
 		catalogName = mcpServer.Status.MCPCatalogID
 	}
+	if catalogName == "" {
+		// For multi-user servers in a workspace, use the workspace ID as the catalog name
+		catalogName = mcpServer.Spec.PowerUserWorkspaceID
+	}
 	// Look up catalog entry for workspace ID (and catalog name if needed)
 	if mcpServer.Spec.MCPServerCatalogEntryName != "" {
 		var entry v1.MCPServerCatalogEntry
@@ -1218,6 +1222,10 @@ func serverFromMCPServerInstance(req api.Context, instance v1.MCPServerInstance)
 	if catalogName == "" {
 		catalogName = server.Status.MCPCatalogID
 	}
+	if catalogName == "" {
+		// For multi-user servers in a workspace, use the workspace ID as the catalog name
+		catalogName = server.Spec.PowerUserWorkspaceID
+	}
 	// Look up catalog entry for workspace ID (and catalog name if needed)
 	if server.Spec.MCPServerCatalogEntryName != "" {
 		var entry v1.MCPServerCatalogEntry
@@ -1309,6 +1317,10 @@ func serverConfigForAction(req api.Context, server v1.MCPServer) (mcp.ServerConf
 	catalogName := server.Spec.MCPCatalogID
 	if catalogName == "" {
 		catalogName = server.Status.MCPCatalogID
+	}
+	if catalogName == "" {
+		// For multi-user servers in a workspace, use the workspace ID as the catalog name
+		catalogName = server.Spec.PowerUserWorkspaceID
 	}
 	// Look up catalog entry for workspace ID (and catalog name if needed)
 	if server.Spec.MCPServerCatalogEntryName != "" {
