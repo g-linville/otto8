@@ -685,6 +685,110 @@ func New(ctx context.Context, config Config) (*Services, error) {
 
 	acrHelper := accesscontrolrule.NewAccessControlRuleHelper(acrInformer.GetIndexer(), r.Backend())
 
+	skillGVK, err := r.Backend().GroupVersionKindFor(&v1.Skill{})
+	if err != nil {
+		return nil, err
+	}
+
+	skillInformer, err := r.Backend().GetInformerForKind(ctx, skillGVK)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = skillInformer.AddIndexers(map[string]gocache.IndexFunc{
+		"repo-ids": func(obj any) ([]string, error) {
+			skill := obj.(*v1.Skill)
+			if skill.Spec.RepoID == "" {
+				return nil, nil
+			}
+			return []string{skill.Spec.RepoID}, nil
+		},
+		"repo-paths": func(obj any) ([]string, error) {
+			skill := obj.(*v1.Skill)
+			if skill.Spec.RepoID == "" || skill.Spec.RelativePath == "" {
+				return nil, nil
+			}
+			return []string{skill.Spec.RepoID + "\x00" + skill.Spec.RelativePath}, nil
+		},
+	}); err != nil {
+		return nil, err
+	}
+
+	skillAccessRuleGVK, err := r.Backend().GroupVersionKindFor(&v1.SkillAccessRule{})
+	if err != nil {
+		return nil, err
+	}
+
+	skillAccessRuleInformer, err := r.Backend().GetInformerForKind(ctx, skillAccessRuleGVK)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = skillAccessRuleInformer.AddIndexers(map[string]gocache.IndexFunc{
+		"skill-ids": func(obj any) ([]string, error) {
+			rule := obj.(*v1.SkillAccessRule)
+			var results []string
+			for _, resource := range rule.Spec.Manifest.Resources {
+				if resource.Type == apiclienttypes.SkillResourceTypeSkill {
+					results = append(results, resource.ID)
+				}
+			}
+			return results, nil
+		},
+		"repository-ids": func(obj any) ([]string, error) {
+			rule := obj.(*v1.SkillAccessRule)
+			var results []string
+			for _, resource := range rule.Spec.Manifest.Resources {
+				if resource.Type == apiclienttypes.SkillResourceTypeSkillRepository {
+					results = append(results, resource.ID)
+				}
+			}
+			return results, nil
+		},
+		"selectors": func(obj any) ([]string, error) {
+			rule := obj.(*v1.SkillAccessRule)
+			var results []string
+			for _, resource := range rule.Spec.Manifest.Resources {
+				if resource.Type == apiclienttypes.SkillResourceTypeSelector {
+					results = append(results, resource.ID)
+				}
+			}
+			return results, nil
+		},
+		"user-ids": func(obj any) ([]string, error) {
+			rule := obj.(*v1.SkillAccessRule)
+			var results []string
+			for _, subject := range rule.Spec.Manifest.Subjects {
+				if subject.Type == apiclienttypes.SubjectTypeUser {
+					results = append(results, subject.ID)
+				}
+			}
+			return results, nil
+		},
+		"group-ids": func(obj any) ([]string, error) {
+			rule := obj.(*v1.SkillAccessRule)
+			var results []string
+			for _, subject := range rule.Spec.Manifest.Subjects {
+				if subject.Type == apiclienttypes.SubjectTypeGroup {
+					results = append(results, subject.ID)
+				}
+			}
+			return results, nil
+		},
+		"subject-selectors": func(obj any) ([]string, error) {
+			rule := obj.(*v1.SkillAccessRule)
+			var results []string
+			for _, subject := range rule.Spec.Manifest.Subjects {
+				if subject.Type == apiclienttypes.SubjectTypeSelector {
+					results = append(results, subject.ID)
+				}
+			}
+			return results, nil
+		},
+	}); err != nil {
+		return nil, err
+	}
+
 	mapHelper, err := modelaccesspolicy.NewHelper(ctx, r.Backend())
 	if err != nil {
 		return nil, err
