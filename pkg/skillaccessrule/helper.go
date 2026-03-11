@@ -142,10 +142,10 @@ func (h *Helper) getRulesForUser(namespace string, user kuser.Info) ([]v1.SkillA
 
 	addRules := func(rules []v1.SkillAccessRule) {
 		for _, rule := range rules {
-			if _, ok := seen[rule.[Name]]; ok {
+			if _, ok := seen[rule.Name]; ok {
 				continue
 			}
-			seen[rule.[Name]] = struct{}{}
+			seen[rule.Name] = struct{}{}
 			result = append(result, rule)
 		}
 	}
