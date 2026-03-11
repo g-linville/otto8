@@ -396,3 +396,81 @@ func TestValidateZIP_Valid(t *testing.T) {
 		t.Fatalf("validateZIP() unexpected error: %v", err)
 	}
 }
+
+func TestValidateZIPEntryName(t *testing.T) {
+	tests := []struct {
+		name    string
+		entry   string
+		wantErr string
+	}{
+		{name: "valid simple", entry: "SKILL.md"},
+		{name: "valid nested", entry: "scripts/run.sh"},
+		{name: "absolute unix", entry: "/etc/passwd", wantErr: "absolute path"},
+		{name: "traversal unix", entry: "../etc/passwd", wantErr: "path traversal"},
+		{name: "traversal nested", entry: "foo/../../etc/passwd", wantErr: "path traversal"},
+		{name: "windows backslash traversal", entry: `..\..\evil.sh`, wantErr: "path traversal"},
+		{name: "windows drive letter", entry: `C:\tmp\evil.sh`, wantErr: "absolute path"},
+		{name: "windows drive slash", entry: "C:/tmp/evil.sh", wantErr: "absolute path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateZIPEntryName(tt.entry)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want containing %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRewriteSkillFrontmatterInZIP_EnforcesActualSize(t *testing.T) {
+	// Build a ZIP where we stuff content close to the limit to test that actual
+	// bytes are tracked. We use the Store method (no compression) so what we
+	// write is what gets decompressed.
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+
+	// SKILL.md first
+	skillContent := createSkillMDContent(t, "big", "Big skill.", nil)
+	fw, err := w.Create(skillformat.SkillMainFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(skillContent); err != nil {
+		t.Fatal(err)
+	}
+
+	// A big file that pushes total past the limit.
+	header := &zip.FileHeader{Name: "big.bin", Method: zip.Store}
+	bw, err := w.CreateHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 1024*1024) // 1 MB
+	for written := 0; written <= maxZIPUncompressedBytes; written += len(chunk) {
+		if _, err := bw.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	fm := skillformat.Frontmatter{Name: "big", Description: "Big skill."}
+	_, err = rewriteSkillFrontmatterInZIP(buf.Bytes(), fm, "")
+	if err == nil {
+		t.Fatal("expected error for oversized content during rewrite")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
