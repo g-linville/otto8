@@ -72,6 +72,11 @@ func newGitHubRepositoryFetcher() *githubRepositoryFetcher {
 	}
 }
 
+func ValidateRepositoryURL(repoURL string) error {
+	_, err := parseGitHubRepository(repoURL)
+	return err
+}
+
 func (f *githubRepositoryFetcher) Fetch(ctx context.Context, repoURL, ref string) (*fetchedRepository, error) {
 	repo, err := parseGitHubRepository(repoURL)
 	if err != nil {

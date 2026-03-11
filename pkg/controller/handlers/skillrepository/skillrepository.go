@@ -251,3 +251,12 @@ func materializeSkillSource(ctx context.Context, fetcher repositoryFetcher, skil
 
 	return fetched, skillDir, nil
 }
+
+func MaterializeSkillSource(ctx context.Context, skill *v1.Skill) (func(), string, error) {
+	fetched, skillDir, err := materializeSkillSource(ctx, newGitHubRepositoryFetcher(), skill)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return fetched.Cleanup, skillDir, nil
+}
