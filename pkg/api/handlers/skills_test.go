@@ -27,7 +27,7 @@ import (
 )
 
 func TestReadAndValidateSkillRepositoryManifest(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/api/skill-repositories", strings.NewReader(`{"repoURL":"https://github.com/example/repo","ref":" main "}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/skill-repositories", strings.NewReader(`{"displayName":"Repo","repoURL":"https://github.com/example/repo","ref":" main "}`))
 	rec := httptest.NewRecorder()
 
 	manifest, err := readAndValidateSkillRepositoryManifest(api.Context{
@@ -38,7 +38,7 @@ func TestReadAndValidateSkillRepositoryManifest(t *testing.T) {
 	assert.Equal(t, "https://github.com/example/repo", manifest.RepoURL)
 	assert.Equal(t, "main", manifest.Ref)
 
-	req = httptest.NewRequest(http.MethodPost, "/api/skill-repositories", strings.NewReader(`{"repoURL":"http://github.com/example/repo"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/skill-repositories", strings.NewReader(`{"displayName":"Repo","repoURL":"http://github.com/example/repo"}`))
 	rec = httptest.NewRecorder()
 	_, err = readAndValidateSkillRepositoryManifest(api.Context{
 		ResponseWriter: rec,
@@ -47,7 +47,7 @@ func TestReadAndValidateSkillRepositoryManifest(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid repoURL")
 
-	req = httptest.NewRequest(http.MethodPost, "/api/skill-repositories", strings.NewReader(`{"repoURL":"https://github.com/example/repo","ref":"   "}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/skill-repositories", strings.NewReader(`{"displayName":"Repo","repoURL":"https://github.com/example/repo","ref":"   "}`))
 	rec = httptest.NewRecorder()
 	_, err = readAndValidateSkillRepositoryManifest(api.Context{
 		ResponseWriter: rec,

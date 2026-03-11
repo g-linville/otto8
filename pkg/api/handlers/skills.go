@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -136,78 +137,88 @@ func (h *SkillHandler) getAccessibleSkill(req api.Context, id string) (*v1.Skill
 	return &skill, nil
 }
 
-// TODO(g-linville): optimize and simplify this function. This is logically correct but overly complex and inefficient.
 func (h *SkillHandler) listAccessibleSkills(req api.Context, repoID string) ([]v1.Skill, error) {
 	allowAll, repoIDs, skillIDs, err := h.skillAccessRuleHelper.GetUserSkillAccessScope(req.User)
 	if err != nil {
 		return nil, err
 	}
 
-	results := map[string]v1.Skill{}
-	addSkill := func(skill v1.Skill) {
-		results[skill.Name] = skill
-	}
-
-	listRepoSkills := func(repoID string) error {
-		var list v1.SkillList
-		if err := req.List(&list, kclient.MatchingFields{"spec.repoID": repoID}); err != nil {
-			return fmt.Errorf("failed to list skills for repository %s: %w", repoID, err)
-		}
-		for _, item := range list.Items {
-			addSkill(item)
-		}
-		return nil
-	}
-
 	if allowAll {
-		var list v1.SkillList
-		var opts []kclient.ListOption
-		if repoID != "" {
-			opts = append(opts, kclient.MatchingFields{"spec.repoID": repoID})
-		}
-		if err := req.List(&list, opts...); err != nil {
-			return nil, fmt.Errorf("failed to list skills: %w", err)
-		}
-		for _, item := range list.Items {
-			addSkill(item)
-		}
-	} else {
-		if repoID != "" {
-			if err := listRepoSkills(repoID); err != nil {
-				return nil, err
-			}
-		} else {
-			for _, grantedRepoID := range sortedMapKeys(repoIDs) {
-				if err := listRepoSkills(grantedRepoID); err != nil {
-					return nil, err
-				}
-			}
-		}
-
-		for _, skillID := range sortedMapKeys(skillIDs) {
-			var skill v1.Skill
-			if err := req.Get(&skill, skillID); err != nil {
-				continue
-			}
-			if repoID != "" && skill.Spec.RepoID != repoID {
-				continue
-			}
-			addSkill(skill)
-		}
+		return listSkills(req, repoID)
 	}
 
-	items := make([]v1.Skill, 0, len(results))
-	for _, item := range results {
-		hasAccess, err := h.skillAccessRuleHelper.UserHasAccessToSkill(req.User, &item)
+	if repoID != "" {
+		return h.listScopedSkillsForRepo(req, repoID, repoIDs, skillIDs)
+	}
+
+	results := make(map[string]v1.Skill, len(repoIDs)+len(skillIDs))
+	for repoID := range repoIDs {
+		skills, err := listSkills(req, repoID)
 		if err != nil {
 			return nil, err
 		}
-		if hasAccess {
-			items = append(items, item)
+		for _, skill := range skills {
+			results[skill.Name] = skill
 		}
 	}
 
-	return items, nil
+	for skillID := range skillIDs {
+		skill, err := getSkill(req, skillID)
+		if err != nil {
+			continue
+		}
+		results[skill.Name] = *skill
+	}
+
+	return mapValues(results), nil
+}
+
+func (h *SkillHandler) listScopedSkillsForRepo(req api.Context, repoID string, allowedRepoIDs, allowedSkillIDs map[string]struct{}) ([]v1.Skill, error) {
+	if _, ok := allowedRepoIDs[repoID]; ok {
+		return listSkills(req, repoID)
+	}
+
+	results := map[string]v1.Skill{}
+	for skillID := range allowedSkillIDs {
+		skill, err := getSkill(req, skillID)
+		if err != nil || skill.Spec.RepoID != repoID {
+			continue
+		}
+		results[skill.Name] = *skill
+	}
+
+	return mapValues(results), nil
+}
+
+func listSkills(req api.Context, repoID string) ([]v1.Skill, error) {
+	var (
+		list v1.SkillList
+		opts []kclient.ListOption
+	)
+
+	if repoID != "" {
+		opts = append(opts, kclient.MatchingFields{"spec.repoID": repoID})
+	}
+	if err := req.List(&list, opts...); err != nil {
+		if repoID != "" {
+			return nil, fmt.Errorf("failed to list skills for repository %s: %w", repoID, err)
+		}
+		return nil, fmt.Errorf("failed to list skills: %w", err)
+	}
+
+	return list.Items, nil
+}
+
+func getSkill(req api.Context, skillID string) (*v1.Skill, error) {
+	var skill v1.Skill
+	if err := req.Get(&skill, skillID); err != nil {
+		return nil, err
+	}
+	return &skill, nil
+}
+
+func mapValues(values map[string]v1.Skill) []v1.Skill {
+	return slices.Collect(maps.Values(values))
 }
 
 func parseSkillListLimit(raw string) (int, error) {
@@ -236,15 +247,6 @@ func skillSortName(displayName, name string) string {
 		return displayName
 	}
 	return name
-}
-
-func sortedMapKeys(values map[string]struct{}) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 func zipSkillDirectory(skillDir string) ([]byte, error) {
