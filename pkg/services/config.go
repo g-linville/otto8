@@ -50,6 +50,7 @@ import (
 	"github.com/obot-platform/obot/pkg/mcp"
 	"github.com/obot-platform/obot/pkg/modelaccesspolicy"
 	"github.com/obot-platform/obot/pkg/proxy"
+	"github.com/obot-platform/obot/pkg/skillaccessrule"
 	"github.com/obot-platform/obot/pkg/storage"
 	v1 "github.com/obot-platform/obot/pkg/storage/apis/obot.obot.ai/v1"
 	"github.com/obot-platform/obot/pkg/storage/blob"
@@ -186,6 +187,9 @@ type Services struct {
 
 	// Used for indexed lookups of model access policies.
 	ModelAccessPolicyHelper *modelaccesspolicy.Helper
+
+	// Used for indexed lookups of skill access rules.
+	SkillAccessRuleHelper *skillaccessrule.Helper
 
 	WebhookHelper *mcp.WebhookHelper
 
@@ -789,6 +793,8 @@ func New(ctx context.Context, config Config) (*Services, error) {
 		return nil, err
 	}
 
+	skillAccessRuleHelper := skillaccessrule.NewHelper(skillAccessRuleInformer.GetIndexer())
+
 	mapHelper, err := modelaccesspolicy.NewHelper(ctx, r.Backend())
 	if err != nil {
 		return nil, err
@@ -1029,6 +1035,7 @@ func New(ctx context.Context, config Config) (*Services, error) {
 		},
 		AccessControlRuleHelper:       acrHelper,
 		ModelAccessPolicyHelper:       mapHelper,
+		SkillAccessRuleHelper:         skillAccessRuleHelper,
 		WebhookHelper:                 webhookHelper,
 		LocalK8sConfig:                localK8sConfig,
 		MCPServerNamespace:            config.MCPNamespace,
