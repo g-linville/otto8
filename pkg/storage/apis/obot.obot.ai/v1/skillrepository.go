@@ -2,7 +2,6 @@ package v1
 
 import (
 	"slices"
-	"strconv"
 
 	"github.com/obot-platform/nah/pkg/fields"
 	"github.com/obot-platform/obot/apiclient/types"
@@ -31,15 +30,13 @@ func (in *SkillRepository) Get(field string) (value string) {
 		return in.Spec.RepoURL
 	case "spec.ref":
 		return in.Spec.Ref
-	case "spec.enabled":
-		return strconv.FormatBool(in.Spec.Enabled)
 	}
 
 	return ""
 }
 
 func (in *SkillRepository) FieldNames() []string {
-	return []string{"spec.repoURL", "spec.ref", "spec.enabled"}
+	return []string{"spec.repoURL", "spec.ref"}
 }
 
 func (in *SkillRepository) GetColumns() [][]string {
@@ -48,7 +45,6 @@ func (in *SkillRepository) GetColumns() [][]string {
 		{"Display Name", "Spec.DisplayName"},
 		{"Repo URL", "Spec.RepoURL"},
 		{"Ref", "Spec.Ref"},
-		{"Enabled", "Spec.Enabled"},
 		{"Discovered Skills", "Status.DiscoveredSkillCount"},
 		{"Last Synced", "{{ago .Status.LastSyncTime}}"},
 	}

@@ -14,7 +14,6 @@ type SkillRepositoryManifest struct {
 	DisplayName string `json:"displayName,omitempty"`
 	RepoURL     string `json:"repoURL,omitempty"`
 	Ref         string `json:"ref,omitempty"`
-	Enabled     bool   `json:"enabled,omitempty"`
 }
 
 type SkillRepositoryList List[SkillRepository]

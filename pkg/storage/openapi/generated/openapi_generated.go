@@ -10231,12 +10231,6 @@ func schema_obot_platform_obot_apiclient_types_SkillManifest(ref common.Referenc
 							},
 						},
 					},
-					"summary": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
-						},
-					},
 				},
 			},
 		},
@@ -10348,12 +10342,6 @@ func schema_obot_platform_obot_apiclient_types_SkillRepositoryManifest(ref commo
 					"ref": {
 						SchemaProps: spec.SchemaProps{
 							Type:   []string{"string"},
-							Format: "",
-						},
-					},
-					"enabled": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"boolean"},
 							Format: "",
 						},
 					},
@@ -19936,12 +19924,6 @@ func schema_storage_apis_obotobotai_v1_SkillRepositorySpec(ref common.ReferenceC
 							Format: "",
 						},
 					},
-					"enabled": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"boolean"},
-							Format: "",
-						},
-					},
 				},
 			},
 		},
@@ -20047,12 +20029,6 @@ func schema_storage_apis_obotobotai_v1_SkillSpec(ref common.ReferenceCallback) c
 									},
 								},
 							},
-						},
-					},
-					"summary": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
 						},
 					},
 					"repoID": {
