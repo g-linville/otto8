@@ -139,6 +139,7 @@ var (
 
 		"/api/projectsv2",
 		"/api/projectsv2/",
+		"GET /api/nanobot-agents",
 	}
 	staticRules = map[string][]string{
 		types.GroupAdmin: adminAndOwnerRules,
