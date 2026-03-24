@@ -14,6 +14,7 @@
 		messages: ChatMessage[];
 		onSend?: (message: string, attachments?: Attachment[]) => Promise<ChatResult | void>;
 		onFileOpen?: (filename: string) => void;
+		onFileDelete?: (uri: string) => void;
 		onReadResource?: (uri: string) => Promise<{ contents: ResourceContents[] }>;
 		isLoading?: boolean;
 		agent?: Agent;
@@ -23,6 +24,7 @@
 	let {
 		messages,
 		onFileOpen,
+		onFileDelete,
 		onReadResource,
 		onSend,
 		isLoading = false,
@@ -115,7 +117,7 @@
 				data-message-id={messageGroup?.[0]?.id}
 			>
 				{#each displayGroup as message (message.id)}
-					<Message {message} {onSend} {onFileOpen} {onReadResource} />
+					<Message {message} {onSend} {onFileOpen} {onFileDelete} {onReadResource} />
 				{/each}
 				{#if isLast}
 					{#if showLoadingIndicator}

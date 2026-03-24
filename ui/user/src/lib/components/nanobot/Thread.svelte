@@ -32,6 +32,7 @@
 		onSendMessage?: (message: string, attachments?: Attachment[]) => Promise<ChatResult | void>;
 		onFileUpload?: (file: File, opts?: { controller?: AbortController }) => Promise<Attachment>;
 		onFileOpen?: (filename: string) => void;
+		onFileDelete?: (uri: string) => void;
 		onReadResource?: (uri: string) => Promise<{ contents: ResourceContents[] }>;
 		onCancel?: () => void;
 		onContentWidthChange?: (width: number) => void;
@@ -61,6 +62,7 @@
 		onSendMessage,
 		onFileUpload,
 		onFileOpen,
+		onFileDelete,
 		onReadResource,
 		onCancel,
 		onContentWidthChange,
@@ -439,6 +441,7 @@
 					{isLoading}
 					{agent}
 					{onFileOpen}
+					{onFileDelete}
 					{onReadResource}
 					hideAgentHeader
 				/>

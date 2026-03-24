@@ -11,6 +11,7 @@
 		browserAvailable?: boolean;
 		browserViewerOpen?: boolean;
 		onFileOpen?: (filename: string) => void;
+		onFileDelete?: (uri: string) => void;
 		suppressEmptyState?: boolean;
 		onThreadContentWidth?: (width: number) => void;
 	}
@@ -21,6 +22,7 @@
 		browserAvailable = false,
 		browserViewerOpen = $bindable(false),
 		onFileOpen,
+		onFileDelete,
 		suppressEmptyState,
 		onThreadContentWidth
 	}: Props = $props();
@@ -50,6 +52,7 @@
 					chat.refreshResources();
 				}}
 				{onFileOpen}
+				{onFileDelete}
 				{browserBaseUrl}
 				{browserAvailable}
 				bind:browserViewerOpen

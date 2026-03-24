@@ -19,10 +19,11 @@
 		role: 'user' | 'assistant';
 		onSend?: (message: string, attachments?: Attachment[]) => Promise<ChatResult | void>;
 		onFileOpen?: (filename: string) => void;
+		onFileDelete?: (uri: string) => void;
 		onReadResource?: (uri: string) => Promise<{ contents: ResourceContents[] }>;
 	}
 
-	let { item, role, onSend, onFileOpen, onReadResource }: Props = $props();
+	let { item, role, onSend, onFileOpen, onFileDelete, onReadResource }: Props = $props();
 </script>
 
 {#if item.type === 'text'}
@@ -39,7 +40,7 @@
 	{@const filePath = item.name === 'write' && item.arguments ? parseToolFilePath(item) : null}
 	{@const isWrittenFile = !!filePath && !filePath.includes('/.nanobot/')}
 	{#if isWrittenFile}
-		<MessageItemFile {item} {onFileOpen} />
+		<MessageItemFile {item} {onFileOpen} {onFileDelete} />
 	{:else}
 		<MessageItemTool {item} {onSend} />
 	{/if}

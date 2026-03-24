@@ -8,8 +8,11 @@
 		Search,
 		LayoutList,
 		FolderTree,
-		ChevronUp
+		ChevronUp,
+		Trash2
 	} from 'lucide-svelte';
+	import Confirm from '$lib/components/Confirm.svelte';
+	import { errors } from '$lib/stores';
 	import { twMerge } from 'tailwind-merge';
 	import { getContext } from 'svelte';
 	import { tryDecodeURIComponent } from '$lib/url';
@@ -34,8 +37,29 @@
 		order: 'desc'
 	});
 	let loading = $state(false);
+	let fileToDelete = $state<string | undefined>();
+	let deleting = $state(false);
 
 	const projectLayout = getContext<ProjectLayoutContext>(PROJECT_LAYOUT_CONTEXT);
+
+	async function confirmDeleteFile() {
+		if (!fileToDelete || !$nanobotChat?.api) return;
+		deleting = true;
+		try {
+			await $nanobotChat.api.deleteFile(fileToDelete);
+			nanobotChat.update((data) => {
+				if (data) {
+					data.resources = data.resources.filter((r) => r.uri !== fileToDelete);
+				}
+				return data;
+			});
+			fileToDelete = undefined;
+		} catch (err) {
+			errors.append(`Failed to delete file: ${err}`);
+		} finally {
+			deleting = false;
+		}
+	}
 
 	type FileTreeNode =
 		| { type: 'folder'; name: string; children: FileTreeNode[] }
@@ -112,7 +136,7 @@
 		return undefined;
 	}
 
-	let columnCount = $derived(4);
+	let columnCount = $derived(5);
 	let columnHeaders = $derived([
 		{ property: 'name', title: 'Name' },
 		{ property: 'size', title: 'Size' },
@@ -336,6 +360,7 @@
 							</button>
 						</th>
 					{/each}
+					<th class="w-12"></th>
 				</tr>
 			</thead>
 			<tbody>
@@ -344,7 +369,7 @@
 						{#if node.type === 'file'}
 							<tr
 								onclick={() => onFileOpen?.(node.uri)}
-								class="hover:bg-base-200 cursor-pointer"
+								class="group hover:bg-base-200 cursor-pointer"
 								role="button"
 								tabindex="0"
 								onkeydown={(e) => {
@@ -380,6 +405,18 @@
 											{node.uri}
 										</p>
 									</div>
+								</td>
+								<td>
+									<button
+										class="btn btn-ghost btn-square btn-xs tooltip opacity-0 transition-opacity group-hover:opacity-100"
+										data-tip="Delete file"
+										onclick={(e: MouseEvent) => {
+											e.stopPropagation();
+											fileToDelete = node.uri;
+										}}
+									>
+										<Trash2 class="size-4" />
+									</button>
 								</td>
 							</tr>
 						{/if}
@@ -426,17 +463,29 @@
 								<span class="min-w-0 truncate font-normal">{node.name}</span>
 							</button>
 						{:else}
-							<button
-								class={twMerge(
-									'btn btn-ghost flex w-full min-w-0 items-center justify-start gap-2 rounded-none py-6 text-left font-normal'
-								)}
-								style="padding-left: {depth * 1.6}rem;"
-								onclick={() => onFileOpen?.(node.uri)}
-								aria-label={`Open file ${node.name}`}
-							>
-								<span class="min-w-0 shrink-0" aria-hidden="true"></span>
-								<FileItem uri={node.uri} classes={{ icon: 'size-4' }} />
-							</button>
+							<div class="group flex w-full items-center">
+								<button
+									class={twMerge(
+										'btn btn-ghost flex min-w-0 flex-1 items-center justify-start gap-2 rounded-none py-6 text-left font-normal'
+									)}
+									style="padding-left: {depth * 1.6}rem;"
+									onclick={() => onFileOpen?.(node.uri)}
+									aria-label={`Open file ${node.name}`}
+								>
+									<span class="min-w-0 shrink-0" aria-hidden="true"></span>
+									<FileItem uri={node.uri} classes={{ icon: 'size-4' }} />
+								</button>
+								<button
+									class="btn btn-ghost btn-square btn-xs tooltip mr-2 opacity-0 transition-opacity group-hover:opacity-100"
+									data-tip="Delete file"
+									onclick={(e: MouseEvent) => {
+										e.stopPropagation();
+										fileToDelete = node.uri;
+									}}
+								>
+									<Trash2 class="size-4" />
+								</button>
+							</div>
 						{/if}
 					</li>
 				{/each}
@@ -448,6 +497,14 @@
 		</ul>
 	{/if}
 </div>
+
+<Confirm
+	msg="Delete this file?"
+	show={fileToDelete !== undefined}
+	loading={deleting}
+	onsuccess={confirmDeleteFile}
+	oncancel={() => (fileToDelete = undefined)}
+/>
 
 <svelte:head>
 	<title>Obot | Files</title>

@@ -184,6 +184,12 @@ export class ChatAPI {
 		return this.mcpClient.readResource(uri);
 	}
 
+	async deleteFile(fileUri: string): Promise<void> {
+		await callMCPTool<void>(this.mcpClient, 'deleteFile', {
+			payload: { uri: fileUri }
+		});
+	}
+
 	async deleteWorkflow(workflowUri: string): Promise<void> {
 		await callMCPTool<void>(this.mcpClient, 'deleteWorkflow', {
 			payload: {

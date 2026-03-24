@@ -20,10 +20,11 @@
 		timestamp?: Date;
 		onSend?: (message: string, attachments?: Attachment[]) => Promise<ChatResult | void>;
 		onFileOpen?: (filename: string) => void;
+		onFileDelete?: (uri: string) => void;
 		onReadResource?: (uri: string) => Promise<{ contents: ResourceContents[] }>;
 	}
 
-	let { message, timestamp, onSend, onFileOpen, onReadResource }: Props = $props();
+	let { message, timestamp, onSend, onFileOpen, onFileDelete, onReadResource }: Props = $props();
 
 	let viewableMessageItems = $derived(
 		message.items?.filter((item) => item.type !== 'reasoning') ?? []
@@ -148,7 +149,7 @@
 					<div class="rounded-box bg-base-200 mt-4 p-2">
 						{#if viewableMessageItems.length > 0}
 							{#each viewableMessageItems as item (item.id)}
-								<MessageItem {item} role={message.role} {onFileOpen} {onReadResource} />
+								<MessageItem {item} role={message.role} {onFileOpen} {onFileDelete} {onReadResource} />
 							{/each}
 						{:else}
 							<!-- Fallback for messages without items -->
@@ -203,6 +204,7 @@
 													role={message.role}
 													{onSend}
 													{onFileOpen}
+													{onFileDelete}
 													{onReadResource}
 												/>
 											{/each}
@@ -215,6 +217,7 @@
 									role={message.role}
 									{onSend}
 									{onFileOpen}
+									{onFileDelete}
 									{onReadResource}
 								/>
 							{/if}
