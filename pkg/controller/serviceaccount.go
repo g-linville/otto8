@@ -141,7 +141,7 @@ func (c *Controller) getServiceAccountSecretToken(ctx context.Context, account s
 		return "", nil, nil
 	}
 
-	runtimeClient, err := c.runtimeK8sClient(ctx)
+	runtimeClient, err := c.runtimeK8sClient()
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to build runtime client: %w", err)
 	}
@@ -161,7 +161,7 @@ func (c *Controller) getServiceAccountSecretToken(ctx context.Context, account s
 }
 
 func (c *Controller) writeServiceAccountSecret(ctx context.Context, account serviceaccounts.Account, existing *corev1.Secret, token string, rotatedAt, expiresAt time.Time) error {
-	runtimeClient, err := c.runtimeK8sClient(ctx)
+	runtimeClient, err := c.runtimeK8sClient()
 	if err != nil {
 		return fmt.Errorf("failed to build runtime client: %w", err)
 	}
@@ -172,8 +172,8 @@ func (c *Controller) writeServiceAccountSecret(ctx context.Context, account serv
 		secret = &corev1.Secret{}
 	}
 
-	secret.ObjectMeta.Name = account.SecretName
-	secret.ObjectMeta.Namespace = c.runtimeNamespace()
+	secret.Name = account.SecretName
+	secret.Namespace = c.runtimeNamespace()
 	if secret.Labels == nil {
 		secret.Labels = map[string]string{}
 	}
@@ -193,7 +193,7 @@ func (c *Controller) writeServiceAccountSecret(ctx context.Context, account serv
 }
 
 func (c *Controller) deleteServiceAccountSecret(ctx context.Context, account serviceaccounts.Account) error {
-	runtimeClient, err := c.runtimeK8sClient(ctx)
+	runtimeClient, err := c.runtimeK8sClient()
 	if err != nil {
 		return fmt.Errorf("failed to build runtime client: %w", err)
 	}
@@ -222,7 +222,7 @@ func (c *Controller) runtimeNamespace() string {
 	return system.DefaultNamespace
 }
 
-func (c *Controller) runtimeK8sClient(ctx context.Context) (kclient.Client, error) {
+func (c *Controller) runtimeK8sClient() (kclient.Client, error) {
 	if c.runtimeClient != nil {
 		return c.runtimeClient, nil
 	}
