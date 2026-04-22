@@ -40,9 +40,11 @@ type ServerConfig struct {
 	Headers []string `json:"headers"`
 
 	// Containerized configuration.
-	ContainerImage string `json:"containerImage"`
-	ContainerPort  int    `json:"containerPort"`
-	ContainerPath  string `json:"containerPath"`
+	ContainerImage string   `json:"containerImage"`
+	ContainerPort  int      `json:"containerPort"`
+	ContainerPath  string   `json:"containerPath"`
+	EgressDomains  []string `json:"egressDomains"`
+	DenyAllEgress  bool     `json:"denyAllEgress"`
 
 	// Composite configuration.
 	Components []ComponentServer `json:"components"`
@@ -252,6 +254,8 @@ func ServerToServerConfig(mcpServer v1.MCPServer, audiences []string, issuer, us
 	case types.RuntimeUVX:
 		if mcpServer.Spec.Manifest.UVXConfig != nil {
 			serverConfig.Command = "uvx"
+			serverConfig.EgressDomains = mcpServer.Spec.Manifest.UVXConfig.EgressDomains
+			serverConfig.DenyAllEgress = types.BoolValue(mcpServer.Spec.Manifest.UVXConfig.DenyAllEgress)
 			if mcpServer.Spec.Manifest.UVXConfig.Command != "" {
 				serverConfig.Args = []string{"--from", mcpServer.Spec.Manifest.UVXConfig.Package, expandEnvVars(mcpServer.Spec.Manifest.UVXConfig.Command, credEnv, fileEnvVars)}
 			} else {
@@ -266,6 +270,8 @@ func ServerToServerConfig(mcpServer v1.MCPServer, audiences []string, issuer, us
 	case types.RuntimeNPX:
 		if mcpServer.Spec.Manifest.NPXConfig != nil {
 			serverConfig.Command = "npx"
+			serverConfig.EgressDomains = mcpServer.Spec.Manifest.NPXConfig.EgressDomains
+			serverConfig.DenyAllEgress = types.BoolValue(mcpServer.Spec.Manifest.NPXConfig.DenyAllEgress)
 			serverConfig.Args = []string{mcpServer.Spec.Manifest.NPXConfig.Package}
 			for _, arg := range mcpServer.Spec.Manifest.NPXConfig.Args {
 				serverConfig.Args = append(serverConfig.Args, expandEnvVars(arg, credEnv, fileEnvVars))
@@ -278,6 +284,8 @@ func ServerToServerConfig(mcpServer v1.MCPServer, audiences []string, issuer, us
 			serverConfig.ContainerImage = expandEnvVars(mcpServer.Spec.Manifest.ContainerizedConfig.Image, credEnv, fileEnvVars)
 			serverConfig.ContainerPort = mcpServer.Spec.Manifest.ContainerizedConfig.Port
 			serverConfig.ContainerPath = mcpServer.Spec.Manifest.ContainerizedConfig.Path
+			serverConfig.EgressDomains = mcpServer.Spec.Manifest.ContainerizedConfig.EgressDomains
+			serverConfig.DenyAllEgress = types.BoolValue(mcpServer.Spec.Manifest.ContainerizedConfig.DenyAllEgress)
 			serverConfig.Command = expandEnvVars(mcpServer.Spec.Manifest.ContainerizedConfig.Command, credEnv, fileEnvVars)
 			serverConfig.Args = make([]string, 0, len(mcpServer.Spec.Manifest.ContainerizedConfig.Args))
 			for _, arg := range mcpServer.Spec.Manifest.ContainerizedConfig.Args {

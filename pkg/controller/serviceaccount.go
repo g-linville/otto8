@@ -207,9 +207,6 @@ func (c *Controller) deleteServiceAccountSecret(ctx context.Context, account ser
 	if errors.Is(err, errRuntimeK8sConfigUnavailable) {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("failed to build runtime client: %w", err)
-	}
 
 	ns, err := c.runtimeNamespace()
 	if err != nil {

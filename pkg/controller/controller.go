@@ -40,6 +40,7 @@ type Controller struct {
 	mcpCatalogHandler     *mcpcatalog.Handler
 	adminWorkspaceHandler *adminworkspace.Handler
 	runtimeClient         kclient.Client
+	providerInstaller     networkPolicyProviderInstaller
 	now                   func() time.Time
 }
 
@@ -102,6 +103,10 @@ func (c *Controller) PreStart(ctx context.Context) error {
 		if err := c.ensureObotMCPServer(ctx); err != nil {
 			return fmt.Errorf("failed to ensure obot MCP server: %w", err)
 		}
+	}
+
+	if err := c.reconcileServiceAccountKeys(ctx); err != nil {
+		return fmt.Errorf("failed to reconcile service account keys: %w", err)
 	}
 
 	return nil
@@ -246,6 +251,10 @@ func (c *Controller) PostStart(ctx context.Context, client kclient.Client) {
 
 	if err := c.mcpCatalogHandler.SetUpDefaultMCPCatalog(ctx, client); err != nil {
 		panic(fmt.Errorf("failed to set up default mcp catalog: %w", err))
+	}
+
+	if err := c.reconcileNetworkPolicyProvider(ctx); err != nil {
+		panic(fmt.Errorf("failed to ensure network policy provider: %w", err))
 	}
 
 	// Re-trigger all MCPServerCatalogEntries after startup to ensure MCPServers

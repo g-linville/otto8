@@ -13,6 +13,53 @@ import (
 
 var hostnameRegex = regexp.MustCompile(`^(?:\*\.)?[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$`)
 
+func validateEgressDomains(runtime types.Runtime, domains []string, denyAllEgress *bool) error {
+	if denyAllEgress != nil && *denyAllEgress && len(domains) > 0 {
+		return types.RuntimeValidationError{
+			Runtime: runtime,
+			Field:   "denyAllEgress",
+			Message: "denyAllEgress cannot be true when egressDomains are specified",
+		}
+	}
+
+	for i, domain := range domains {
+		domain = strings.TrimSpace(domain)
+		if domain == "" {
+			return types.RuntimeValidationError{
+				Runtime: runtime,
+				Field:   fmt.Sprintf("egressDomains[%d]", i),
+				Message: "egress domain cannot be empty",
+			}
+		}
+
+		if strings.Contains(domain, "://") {
+			return types.RuntimeValidationError{
+				Runtime: runtime,
+				Field:   fmt.Sprintf("egressDomains[%d]", i),
+				Message: "egress domain must not include a protocol",
+			}
+		}
+
+		if strings.ContainsAny(domain, "/:") {
+			return types.RuntimeValidationError{
+				Runtime: runtime,
+				Field:   fmt.Sprintf("egressDomains[%d]", i),
+				Message: "egress domain must not include a path or port",
+			}
+		}
+
+		if !hostnameRegex.MatchString(domain) {
+			return types.RuntimeValidationError{
+				Runtime: runtime,
+				Field:   fmt.Sprintf("egressDomains[%d]", i),
+				Message: "egress domain must be a valid hostname or leading wildcard hostname",
+			}
+		}
+	}
+
+	return nil
+}
+
 // RuntimeValidator defines the interface for validating runtime-specific configurations
 type RuntimeValidator interface {
 	ValidateConfig(manifest types.MCPServerManifest) error
@@ -85,6 +132,10 @@ func (v UVXValidator) validateUVXConfig(config types.UVXRuntimeConfig) error {
 		}
 	}
 
+	if err := validateEgressDomains(types.RuntimeUVX, config.EgressDomains, config.DenyAllEgress); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -149,6 +200,10 @@ func (v NPXValidator) validateNPXConfig(config types.NPXRuntimeConfig) error {
 				Message: "argument cannot be empty",
 			}
 		}
+	}
+
+	if err := validateEgressDomains(types.RuntimeNPX, config.EgressDomains, config.DenyAllEgress); err != nil {
+		return err
 	}
 
 	return nil
@@ -231,6 +286,10 @@ func (v ContainerizedValidator) validateContainerizedConfig(config types.Contain
 				Message: "argument cannot be empty",
 			}
 		}
+	}
+
+	if err := validateEgressDomains(types.RuntimeContainerized, config.EgressDomains, config.DenyAllEgress); err != nil {
+		return err
 	}
 
 	return nil
