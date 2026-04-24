@@ -58,8 +58,13 @@ func (c *Controller) reconcileNetworkPolicyProvider(ctx context.Context) error {
 		return err
 	}
 
+	ns, err := c.runtimeNamespace()
+	if err != nil {
+		return err
+	}
+
 	if !c.services.MCPNetworkPolicyEnabled {
-		return installer.Uninstall(ctx, c.runtimeNamespace())
+		return installer.Uninstall(ctx, ns)
 	}
 
 	spec, err := c.desiredNetworkPolicyProviderInstallSpec()
@@ -82,7 +87,12 @@ func (c *Controller) networkPolicyProviderInstaller() (networkPolicyProviderInst
 }
 
 func (c *Controller) desiredNetworkPolicyProviderInstallSpec() (networkPolicyProviderInstallSpec, error) {
-	releaseNamespace := c.runtimeNamespace()
+	ns, err := c.runtimeNamespace()
+	if err != nil {
+		return networkPolicyProviderInstallSpec{}, err
+	}
+
+	releaseNamespace := ns
 	storageURL, err := c.networkPolicyProviderStorageURL()
 	if err != nil {
 		return networkPolicyProviderInstallSpec{}, err

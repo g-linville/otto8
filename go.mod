@@ -3,7 +3,6 @@ module github.com/obot-platform/obot
 go 1.26.2
 
 replace (
-	github.com/obot-platform/nah => ./nah
 	github.com/obot-platform/obot/apiclient => ./apiclient
 	github.com/obot-platform/obot/logger => ./logger
 )
@@ -40,7 +39,7 @@ require (
 	github.com/nanobot-ai/nanobot v0.0.68
 	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037
 	github.com/obot-platform/kinm v0.0.0-20260310205725-afa1a058aa7a
-	github.com/obot-platform/nah v0.0.0-20260310205713-8137b9b71aeb
+	github.com/obot-platform/nah v0.0.0-20260424131842-3fc648d20cac
 	github.com/obot-platform/obot/apiclient v0.0.0-20250813183905-ade719c1e8bf
 	github.com/obot-platform/obot/logger v0.0.0-20241217130503-4004a5c69f32
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
