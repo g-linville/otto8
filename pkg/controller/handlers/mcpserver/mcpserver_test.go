@@ -792,7 +792,7 @@ func TestEnsureMCPNetworkPolicyCreatesPolicy(t *testing.T) {
 	server.Spec.Manifest.Runtime = types.RuntimeNPX
 	server.Spec.Manifest.NPXConfig = &types.NPXRuntimeConfig{
 		Package:       "@test/package",
-		EgressDomains: []string{"api.example.com"},
+		EgressDomains: []string{"api.example.com", "*.google.com"},
 	}
 
 	client := newFakeClient(t, server)
@@ -816,7 +816,7 @@ func TestEnsureMCPNetworkPolicyCreatesPolicy(t *testing.T) {
 	assert.True(t, strings.HasPrefix(policy.Name, "mnp1"))
 	assert.Equal(t, server.Name, policy.Spec.MCPServerName)
 	assert.Equal(t, map[string]string{"app": server.Name}, policy.Spec.PodSelector)
-	assert.Equal(t, []string{"api.example.com"}, policy.Spec.EgressDomains)
+	assert.Equal(t, []string{"*.google.com", "api.example.com"}, policy.Spec.EgressDomains)
 	assert.False(t, policy.Spec.DenyAllEgress)
 }
 
@@ -868,6 +868,34 @@ func TestEnsureMCPNetworkPolicyDeletesPolicyWhenProviderDisabled(t *testing.T) {
 	}
 
 	err := (&Handler{}).EnsureMCPNetworkPolicy(req, &router.ResponseWrapper{})
+	require.NoError(t, err)
+
+	var policies v1.MCPNetworkPolicyList
+	require.NoError(t, client.List(context.Background(), &policies, kclient.InNamespace(server.Namespace), kclient.MatchingFields{
+		"spec.mcpServerName": server.Name,
+	}))
+	require.Empty(t, policies.Items)
+}
+
+func TestEnsureMCPNetworkPolicySkipsNanobotAgentServer(t *testing.T) {
+	server := newMCPServer("nanobot-agent-server")
+	server.Spec.NanobotAgentID = "agent-1"
+	server.Spec.Manifest.Runtime = types.RuntimeNPX
+	server.Spec.Manifest.NPXConfig = &types.NPXRuntimeConfig{
+		Package:       "@test/package",
+		EgressDomains: []string{"api.example.com"},
+	}
+
+	client := newFakeClient(t, server)
+	req := router.Request{
+		Client:    client,
+		Ctx:       context.Background(),
+		Object:    server,
+		Namespace: server.Namespace,
+		Name:      server.Name,
+	}
+
+	err := (&Handler{networkPolicyProviderEnabled: true}).EnsureMCPNetworkPolicy(req, &router.ResponseWrapper{})
 	require.NoError(t, err)
 
 	var policies v1.MCPNetworkPolicyList

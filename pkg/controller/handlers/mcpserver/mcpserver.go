@@ -87,6 +87,11 @@ func (h *Handler) EnsureMCPNetworkPolicy(req router.Request, _ router.Response) 
 		return h.deleteMCPNetworkPolicy(req, server.Namespace, server.Name)
 	}
 
+	// Don't create an MCPNetworkPolicy if this is an agent pod
+	if server.Spec.NanobotAgentID != "" {
+		return nil
+	}
+
 	var egressDomains []string
 	var denyAllEgress bool
 	switch server.Spec.Manifest.Runtime {
