@@ -936,6 +936,44 @@ func TestEnsureMCPNetworkPolicyDeletesPolicyForUnsupportedRuntime(t *testing.T) 
 	require.Empty(t, policies.Items)
 }
 
+func TestEnsureMCPNetworkPolicyClearsDomainsWhenCatalogEntryDeleted(t *testing.T) {
+	// When NeedsUpdate=true but the catalog entry is gone (deleted), egress domains
+	// must be cleared — not kept stale — so the policy fails closed.
+	server := newMCPServer("deleted-catalog-server")
+	server.Spec.Manifest.Runtime = types.RuntimeContainerized
+	server.Spec.Manifest.ContainerizedConfig = &types.ContainerizedRuntimeConfig{
+		Image:         "test-image:latest",
+		Port:          8080,
+		EgressDomains: []string{"api.openai.com"}, // stale domains in server manifest
+	}
+	server.Spec.MCPServerCatalogEntryName = "deleted-entry"
+	server.Status.NeedsUpdate = true
+	// catalog entry deliberately NOT added to client — simulates deletion
+
+	client := newFakeClient(t, server)
+	req := router.Request{
+		Client:    client,
+		Ctx:       context.Background(),
+		Object:    server,
+		Namespace: server.Namespace,
+		Name:      server.Name,
+	}
+
+	// defaultDenyAllEgress=true matches production (OBOT_SERVER_MCPDEFAULT_DENY_ALL_EGRESS=true)
+	err := (&Handler{networkPolicyProviderEnabled: true, defaultDenyAllEgress: true}).EnsureMCPNetworkPolicy(req, &router.ResponseWrapper{})
+	require.NoError(t, err)
+
+	var policies v1.MCPNetworkPolicyList
+	require.NoError(t, client.List(context.Background(), &policies, kclient.InNamespace(server.Namespace), kclient.MatchingFields{
+		"spec.mcpServerName": server.Name,
+	}))
+	require.Len(t, policies.Items, 1)
+	assert.Empty(t, policies.Items[0].Spec.EgressDomains,
+		"stale domains must be cleared when catalog entry is deleted")
+	assert.True(t, policies.Items[0].Spec.DenyAllEgress,
+		"policy must deny all egress when catalog entry is deleted")
+}
+
 func TestEnsureMCPNetworkPolicyUsesCatalogDomainsWhenNeedsUpdate(t *testing.T) {
 	// When NeedsUpdate=true the server manifest is stale. EnsureMCPNetworkPolicy
 	// should read EgressDomains from the catalog entry so domain changes in the

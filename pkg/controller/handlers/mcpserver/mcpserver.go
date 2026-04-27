@@ -92,6 +92,7 @@ func (h *Handler) EnsureMCPNetworkPolicy(req router.Request, _ router.Response) 
 		return nil
 	}
 
+	// egressDomainsFromRuntimeConfig extracts egress policy from runtime-specific config.
 	var egressDomains []string
 	var denyAllEgress bool
 	switch server.Spec.Manifest.Runtime {
@@ -115,12 +116,23 @@ func (h *Handler) EnsureMCPNetworkPolicy(req router.Request, _ router.Response) 
 	}
 
 	// When the server's manifest has drifted from its catalog entry, prefer the catalog
-	// entry's egress domains. This ensures domain changes in the catalog take effect
-	// immediately in the network policy without waiting for TriggerUpdate to sync the
-	// server manifest.
+	// entry's egress domains. Domain changes in the catalog take effect immediately
+	// without waiting for TriggerUpdate to sync the server manifest.
+	// Errors are surfaced so operators know when enforcement is running on stale data.
 	if server.Status.NeedsUpdate && server.Spec.MCPServerCatalogEntryName != "" {
 		var entry v1.MCPServerCatalogEntry
-		if err := req.Get(&entry, server.Namespace, server.Spec.MCPServerCatalogEntryName); err == nil {
+		if err := req.Get(&entry, server.Namespace, server.Spec.MCPServerCatalogEntryName); err != nil {
+			if apierrors.IsNotFound(err) {
+				// Catalog entry deleted: clear domains so stale policy is not enforced.
+				log.Infof("Catalog entry %s not found for server %s; clearing egress domains",
+					server.Spec.MCPServerCatalogEntryName, server.Name)
+				egressDomains = nil
+				denyAllEgress = types.EffectiveDenyAllEgress(nil, nil, h.defaultDenyAllEgress)
+			} else {
+				return fmt.Errorf("failed to get catalog entry %s for egress policy: %w",
+					server.Spec.MCPServerCatalogEntryName, err)
+			}
+		} else {
 			var catalogEgressDomains []string
 			var catalogDenyAllEgress bool
 			switch entry.Spec.Manifest.Runtime {
