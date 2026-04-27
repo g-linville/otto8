@@ -935,3 +935,55 @@ func TestEnsureMCPNetworkPolicyDeletesPolicyForUnsupportedRuntime(t *testing.T) 
 	}))
 	require.Empty(t, policies.Items)
 }
+
+func TestEnsureMCPNetworkPolicyUsesCatalogDomainsWhenNeedsUpdate(t *testing.T) {
+	// When NeedsUpdate=true the server manifest is stale. EnsureMCPNetworkPolicy
+	// should read EgressDomains from the catalog entry so domain changes in the
+	// catalog take effect immediately without waiting for TriggerUpdate.
+	catalogEntry := &v1.MCPServerCatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-catalog-entry",
+			Namespace: "default",
+		},
+		Spec: v1.MCPServerCatalogEntrySpec{
+			Manifest: types.MCPServerCatalogEntryManifest{
+				Runtime: types.RuntimeContainerized,
+				ContainerizedConfig: &types.ContainerizedRuntimeConfig{
+					Image:         "test-image:latest",
+					Port:          8080,
+					EgressDomains: []string{"*.anthropic.com"},
+				},
+			},
+		},
+	}
+
+	server := newMCPServer("drift-server")
+	server.Spec.Manifest.Runtime = types.RuntimeContainerized
+	server.Spec.Manifest.ContainerizedConfig = &types.ContainerizedRuntimeConfig{
+		Image: "test-image:latest",
+		Port:  8080,
+		// Stale: empty domains (catalog has *.anthropic.com)
+	}
+	server.Spec.MCPServerCatalogEntryName = catalogEntry.Name
+	server.Status.NeedsUpdate = true
+
+	client := newFakeClient(t, server, catalogEntry)
+	req := router.Request{
+		Client:    client,
+		Ctx:       context.Background(),
+		Object:    server,
+		Namespace: server.Namespace,
+		Name:      server.Name,
+	}
+
+	err := (&Handler{networkPolicyProviderEnabled: true}).EnsureMCPNetworkPolicy(req, &router.ResponseWrapper{})
+	require.NoError(t, err)
+
+	var policies v1.MCPNetworkPolicyList
+	require.NoError(t, client.List(context.Background(), &policies, kclient.InNamespace(server.Namespace), kclient.MatchingFields{
+		"spec.mcpServerName": server.Name,
+	}))
+	require.Len(t, policies.Items, 1)
+	assert.Equal(t, []string{"*.anthropic.com"}, policies.Items[0].Spec.EgressDomains,
+		"expected catalog entry domains when NeedsUpdate=true, not stale server manifest")
+}
