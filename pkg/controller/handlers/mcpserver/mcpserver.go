@@ -114,6 +114,39 @@ func (h *Handler) EnsureMCPNetworkPolicy(req router.Request, _ router.Response) 
 		return h.deleteMCPNetworkPolicy(req, server.Namespace, server.Name)
 	}
 
+	// When the server's manifest has drifted from its catalog entry, prefer the catalog
+	// entry's egress domains. This ensures domain changes in the catalog take effect
+	// immediately in the network policy without waiting for TriggerUpdate to sync the
+	// server manifest.
+	if server.Status.NeedsUpdate && server.Spec.MCPServerCatalogEntryName != "" {
+		var entry v1.MCPServerCatalogEntry
+		if err := req.Get(&entry, server.Namespace, server.Spec.MCPServerCatalogEntryName); err == nil {
+			var catalogEgressDomains []string
+			var catalogDenyAllEgress bool
+			switch entry.Spec.Manifest.Runtime {
+			case types.RuntimeNPX:
+				if entry.Spec.Manifest.NPXConfig != nil {
+					catalogEgressDomains = entry.Spec.Manifest.NPXConfig.EgressDomains
+					catalogDenyAllEgress = types.EffectiveDenyAllEgress(entry.Spec.Manifest.NPXConfig.DenyAllEgress, catalogEgressDomains, h.defaultDenyAllEgress)
+				}
+			case types.RuntimeUVX:
+				if entry.Spec.Manifest.UVXConfig != nil {
+					catalogEgressDomains = entry.Spec.Manifest.UVXConfig.EgressDomains
+					catalogDenyAllEgress = types.EffectiveDenyAllEgress(entry.Spec.Manifest.UVXConfig.DenyAllEgress, catalogEgressDomains, h.defaultDenyAllEgress)
+				}
+			case types.RuntimeContainerized:
+				if entry.Spec.Manifest.ContainerizedConfig != nil {
+					catalogEgressDomains = entry.Spec.Manifest.ContainerizedConfig.EgressDomains
+					catalogDenyAllEgress = types.EffectiveDenyAllEgress(entry.Spec.Manifest.ContainerizedConfig.DenyAllEgress, catalogEgressDomains, h.defaultDenyAllEgress)
+				}
+			}
+			if !slices.Equal(egressDomains, catalogEgressDomains) || denyAllEgress != catalogDenyAllEgress {
+				egressDomains = catalogEgressDomains
+				denyAllEgress = catalogDenyAllEgress
+			}
+		}
+	}
+
 	egressDomains = slices.Clone(egressDomains)
 	slices.Sort(egressDomains)
 
