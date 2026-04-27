@@ -607,8 +607,8 @@ func New(ctx context.Context, config Config) (*Services, error) {
 			return "", err
 		}
 		account, ok := serviceaccounts.Get(apiKey.ServiceAccountName)
-		if !ok || !serviceaccounts.Enabled(account, config.MCPRuntimeBackend) {
-			return "", fmt.Errorf("%w: service account %q disabled for backend %q", storageauthn.ErrInvalidServiceAccountToken, apiKey.ServiceAccountName, config.MCPRuntimeBackend)
+		if !ok || !serviceaccounts.Enabled(account, config.MCPRuntimeBackend, mcpNetworkPolicyEnabled) {
+			return "", fmt.Errorf("%w: service account %q disabled for backend %q or network policy provider enabled=%t", storageauthn.ErrInvalidServiceAccountToken, apiKey.ServiceAccountName, config.MCPRuntimeBackend, mcpNetworkPolicyEnabled)
 		}
 		return apiKey.ServiceAccountName, nil
 	})

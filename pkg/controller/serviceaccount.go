@@ -45,7 +45,7 @@ func (c *Controller) runServiceAccountKeyRotation(ctx context.Context) {
 
 func (c *Controller) reconcileServiceAccountKeys(ctx context.Context) error {
 	for _, account := range serviceaccounts.All() {
-		if !serviceaccounts.Enabled(account, c.services.MCPRuntimeBackend) {
+		if !serviceaccounts.Enabled(account, c.services.MCPRuntimeBackend, c.services.MCPNetworkPolicyEnabled) {
 			if err := c.cleanupServiceAccountKey(ctx, account); err != nil {
 				return err
 			}

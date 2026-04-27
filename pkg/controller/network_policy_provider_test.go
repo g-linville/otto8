@@ -29,7 +29,10 @@ func (f *fakeNetworkPolicyProviderInstaller) Uninstall(_ context.Context, releas
 	return nil
 }
 
-func newNetworkPolicyProviderController(installer networkPolicyProviderInstaller) *Controller {
+func newNetworkPolicyProviderController(t *testing.T, installer networkPolicyProviderInstaller) *Controller {
+	t.Helper()
+	t.Setenv("POD_NAMESPACE", "default")
+
 	return &Controller{
 		services: &services.Services{
 			MCPRuntimeBackend:                    "kubernetes",
@@ -50,7 +53,7 @@ func newNetworkPolicyProviderController(installer networkPolicyProviderInstaller
 func TestEnsureNetworkPolicyProviderInstallsChartRelease(t *testing.T) {
 	ctx := context.Background()
 	installer := &fakeNetworkPolicyProviderInstaller{}
-	controller := newNetworkPolicyProviderController(installer)
+	controller := newNetworkPolicyProviderController(t, installer)
 
 	require.NoError(t, controller.reconcileNetworkPolicyProvider(ctx))
 	require.NotNil(t, installer.installed)
@@ -68,7 +71,7 @@ func TestEnsureNetworkPolicyProviderInstallsChartRelease(t *testing.T) {
 func TestEnsureNetworkPolicyProviderMergesValuesBlob(t *testing.T) {
 	ctx := context.Background()
 	installer := &fakeNetworkPolicyProviderInstaller{}
-	controller := newNetworkPolicyProviderController(installer)
+	controller := newNetworkPolicyProviderController(t, installer)
 	controller.services.MCPNetworkPolicyProviderValues = `
 mcpRuntimeNamespace: custom-runtime
 extraFlag: true
@@ -84,7 +87,7 @@ extraFlag: true
 func TestEnsureNetworkPolicyProviderUninstallsWhenDisabled(t *testing.T) {
 	ctx := context.Background()
 	installer := &fakeNetworkPolicyProviderInstaller{}
-	controller := newNetworkPolicyProviderController(installer)
+	controller := newNetworkPolicyProviderController(t, installer)
 	controller.services.MCPNetworkPolicyEnabled = false
 
 	require.NoError(t, controller.reconcileNetworkPolicyProvider(ctx))
@@ -96,7 +99,7 @@ func TestEnsureNetworkPolicyProviderUninstallsWhenDisabled(t *testing.T) {
 func TestEnsureNetworkPolicyProviderSkipsUninstallOutsideKubernetes(t *testing.T) {
 	ctx := context.Background()
 	installer := &fakeNetworkPolicyProviderInstaller{}
-	controller := newNetworkPolicyProviderController(installer)
+	controller := newNetworkPolicyProviderController(t, installer)
 	controller.services.MCPRuntimeBackend = "docker"
 	controller.services.MCPNetworkPolicyEnabled = false
 
@@ -108,7 +111,7 @@ func TestEnsureNetworkPolicyProviderSkipsUninstallOutsideKubernetes(t *testing.T
 func TestEnsureNetworkPolicyProviderRequiresStorageSettings(t *testing.T) {
 	ctx := context.Background()
 	installer := &fakeNetworkPolicyProviderInstaller{}
-	controller := newNetworkPolicyProviderController(installer)
+	controller := newNetworkPolicyProviderController(t, installer)
 	controller.services.ServiceName = ""
 
 	err := controller.reconcileNetworkPolicyProvider(ctx)
@@ -119,7 +122,7 @@ func TestEnsureNetworkPolicyProviderRequiresStorageSettings(t *testing.T) {
 func TestEnsureNetworkPolicyProviderUsesConfiguredClusterDomain(t *testing.T) {
 	ctx := context.Background()
 	installer := &fakeNetworkPolicyProviderInstaller{}
-	controller := newNetworkPolicyProviderController(installer)
+	controller := newNetworkPolicyProviderController(t, installer)
 	controller.services.MCPClusterDomain = "example.internal"
 
 	require.NoError(t, controller.reconcileNetworkPolicyProvider(ctx))
