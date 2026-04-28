@@ -63,6 +63,7 @@ ENV OBOT_SERVER_DEFAULT_MCPCATALOG_PATH=https://github.com/obot-platform/mcp-cat
 COPY aws-encryption.yaml /
 COPY azure-encryption.yaml /
 COPY gcp-encryption.yaml /
+COPY aviatrix /charts/aviatrix
 COPY --chmod=0755 run.sh /bin/run.sh
 
 COPY --link --from=tools /obot-tools /obot-tools
