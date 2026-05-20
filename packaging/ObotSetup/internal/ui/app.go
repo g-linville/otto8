@@ -5,6 +5,7 @@ package ui
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"image/color"
 	"strings"
@@ -31,6 +32,15 @@ type Config struct {
 	Client     cli.Client
 }
 
+type viewMode string
+
+const (
+	viewStatus viewMode = "status"
+	viewURL    viewMode = "url"
+	viewAgents viewMode = "agents"
+	viewRun    viewMode = "run"
+)
+
 func Run(cfg Config) {
 	a := app.NewWithID("ai.obot.setup")
 	w := a.NewWindow("Obot Setup")
@@ -50,9 +60,22 @@ type controller struct {
 	urlValue      *widget.Label
 	tokenValue    *widget.Label
 	versionValue  *widget.Label
+	urlEntry      *widget.Entry
 	agentsBox     *fyne.Container
+	progressBox   *fyne.Container
 	messagesBox   *fyne.Container
 	refreshButton *widget.Button
+	runButton     *widget.Button
+	cancelButton  *widget.Button
+	body          *fyne.Container
+	footer        *fyne.Container
+
+	mode           viewMode
+	snapshot       setupstate.Snapshot
+	selectedAgents map[string]bool
+	setupURL       string
+	setupCancel    context.CancelFunc
+	running        bool
 }
 
 func newController(cfg Config) *controller {
@@ -62,7 +85,11 @@ func newController(cfg Config) *controller {
 	if cfg.Client.Path == "" {
 		cfg.Client.Path = cfg.CLIPath
 	}
-	return &controller{cfg: cfg}
+	return &controller{
+		cfg:            cfg,
+		mode:           viewStatus,
+		selectedAgents: map[string]bool{},
+	}
 }
 
 func (c *controller) content() fyne.CanvasObject {
@@ -76,42 +103,27 @@ func (c *controller) content() fyne.CanvasObject {
 	c.urlValue = valueLabel()
 	c.tokenValue = valueLabel()
 	c.versionValue = valueLabel()
+	c.urlEntry = widget.NewEntry()
+	c.urlEntry.SetPlaceHolder("https://your-obot.example.com")
 	c.messagesBox = container.NewVBox()
 	c.agentsBox = container.NewVBox(helperRow(theme.InfoIcon(), "Detecting supported agents...", ""))
+	c.progressBox = container.NewVBox(helperRow(theme.InfoIcon(), "Setup has not started", ""))
 
 	c.refreshButton = widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), c.load)
+	c.runButton = widget.NewButtonWithIcon("Run Setup", theme.MediaPlayIcon(), c.startSetupFlow)
+	c.cancelButton = widget.NewButtonWithIcon("Cancel", theme.CancelIcon(), c.cancelSetup)
+	c.cancelButton.Disable()
 
 	c.statusPanelBG = panelBackground(statusPanelColor(setupstate.FirstRun), panelBorderColor)
-	statusContent := container.NewBorder(
-		nil,
-		nil,
-		container.NewPadded(c.statusIcon),
-		nil,
-		container.NewVBox(c.statusLabel, c.detailLabel),
-	)
-	statusSection := panel(c.statusPanelBG, statusContent)
-	cliSection := section("CLI", panelSectionColor, widget.NewForm(
-		widget.NewFormItem("Path", c.cliPathValue),
-		widget.NewFormItem("Version", c.versionValue),
-		widget.NewFormItem("Default URL", c.urlValue),
-		widget.NewFormItem("Token", c.tokenValue),
-	))
-	agentsSection := section("Supported Agents", panelSectionColor, c.agentsBox)
-
-	body := container.NewVBox(
-		statusSection,
-		cliSection,
-		agentsSection,
-		c.messagesBox,
-	)
-	scrollContent := container.NewBorder(nil, nil, nil, rightGutter(), body)
-	footer := container.NewHBox(layout.NewSpacer(), c.refreshButton)
+	c.body = container.NewVBox(c.statusSection(), c.messagesBox)
+	scrollContent := container.NewBorder(nil, nil, nil, rightGutter(), c.body)
+	c.footer = container.NewHBox(layout.NewSpacer(), c.refreshButton, c.runButton)
 
 	go c.load()
 
 	return container.NewBorder(
 		container.NewPadded(titleHeader()),
-		container.NewPadded(footer),
+		container.NewPadded(c.footer),
 		nil,
 		nil,
 		container.NewPadded(container.NewVScroll(scrollContent)),
@@ -160,6 +172,30 @@ func valueLabel() *widget.Label {
 	return label
 }
 
+func (c *controller) statusSection() fyne.CanvasObject {
+	statusContent := container.NewBorder(
+		nil,
+		nil,
+		container.NewPadded(c.statusIcon),
+		nil,
+		container.NewVBox(c.statusLabel, c.detailLabel),
+	)
+	return panel(c.statusPanelBG, statusContent)
+}
+
+func (c *controller) cliSection() fyne.CanvasObject {
+	return section("CLI", panelSectionColor, widget.NewForm(
+		widget.NewFormItem("Path", c.cliPathValue),
+		widget.NewFormItem("Version", c.versionValue),
+		widget.NewFormItem("Default URL", c.urlValue),
+		widget.NewFormItem("Token", c.tokenValue),
+	))
+}
+
+func (c *controller) agentsSection() fyne.CanvasObject {
+	return section("Detected Agents", panelSectionColor, c.agentsBox)
+}
+
 func (c *controller) load() {
 	c.setLoading()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -193,17 +229,26 @@ func (c *controller) load() {
 func (c *controller) setLoading() {
 	fyne.Do(func() {
 		c.refreshButton.Disable()
+		c.runButton.Disable()
+		c.cancelButton.Disable()
 		c.statusIcon.SetResource(theme.InfoIcon())
 		c.statusLabel.SetText("Checking Obot CLI...")
 		c.detailLabel.SetText("Loading local setup status and supported agent detection.")
 		c.messagesBox.RemoveAll()
 		c.messagesBox.Refresh()
+		if c.mode == viewStatus {
+			c.setBody(c.statusSection(), c.messagesBox)
+			c.setFooter(layout.NewSpacer(), c.refreshButton, c.runButton)
+		}
 	})
 }
 
 func (c *controller) render(snapshot setupstate.Snapshot) {
 	fyne.Do(func() {
-		c.refreshButton.Enable()
+		c.snapshot = snapshot
+		if strings.TrimSpace(c.urlEntry.Text) == "" && snapshot.Status.DefaultURL != "" {
+			c.urlEntry.SetText(snapshot.Status.DefaultURL)
+		}
 		c.statusIcon.SetResource(statusIcon(snapshot.Kind))
 		c.statusPanelBG.FillColor = statusPanelColor(snapshot.Kind)
 		c.statusPanelBG.Refresh()
@@ -213,12 +258,37 @@ func (c *controller) render(snapshot setupstate.Snapshot) {
 		c.versionValue.SetText(versionText(snapshot))
 		c.urlValue.SetText(urlText(snapshot))
 		c.tokenValue.SetText(tokenText(snapshot))
-		c.renderAgents(snapshot)
-		c.renderMessages(snapshot)
+		if c.mode == viewStatus {
+			c.renderStatusAgents(snapshot)
+			c.renderMessages(snapshot)
+			c.setBody(
+				c.statusSection(),
+				c.cliSection(),
+				c.agentsSection(),
+				c.messagesBox,
+			)
+		}
+		c.updateButtons()
 	})
 }
 
-func (c *controller) renderAgents(snapshot setupstate.Snapshot) {
+func (c *controller) setBody(objects ...fyne.CanvasObject) {
+	c.body.RemoveAll()
+	for _, object := range objects {
+		c.body.Add(object)
+	}
+	c.body.Refresh()
+}
+
+func (c *controller) setFooter(objects ...fyne.CanvasObject) {
+	c.footer.RemoveAll()
+	for _, object := range objects {
+		c.footer.Add(object)
+	}
+	c.footer.Refresh()
+}
+
+func (c *controller) renderStatusAgents(snapshot setupstate.Snapshot) {
 	c.agentsBox.RemoveAll()
 	if snapshot.Kind == setupstate.MissingCLI || snapshot.StatusErr != nil {
 		c.agentsBox.Add(helperRow(theme.InfoIcon(), "Agent detection unavailable", "Agent detection needs a supported Obot CLI."))
@@ -239,7 +309,28 @@ func (c *controller) renderAgents(snapshot setupstate.Snapshot) {
 		if i > 0 {
 			c.agentsBox.Add(agentSeparator())
 		}
-		c.agentsBox.Add(agentRow(agent))
+		c.agentsBox.Add(agentStatusRow(agent))
+	}
+	c.agentsBox.Refresh()
+}
+
+func (c *controller) renderAgentChoices(snapshot setupstate.Snapshot) {
+	c.agentsBox.RemoveAll()
+	if snapshot.AgentsErr != nil {
+		c.agentsBox.Add(helperRow(theme.WarningIcon(), "Agent detection failed", "Go back and try again, or run setup without local agent integrations."))
+		c.agentsBox.Refresh()
+		return
+	}
+	if len(snapshot.Agents) == 0 {
+		c.agentsBox.Add(helperRow(theme.InfoIcon(), "No supported agents detected", "Setup can continue without installing local agent integrations."))
+		c.agentsBox.Refresh()
+		return
+	}
+	for i, agent := range snapshot.Agents {
+		if i > 0 {
+			c.agentsBox.Add(agentSeparator())
+		}
+		c.agentsBox.Add(c.agentCheckboxRow(agent))
 	}
 	c.agentsBox.Refresh()
 }
@@ -255,6 +346,231 @@ func (c *controller) renderMessages(snapshot setupstate.Snapshot) {
 	c.messagesBox.Refresh()
 }
 
+func (c *controller) updateButtons() {
+	if c.running {
+		c.cancelButton.Enable()
+		return
+	}
+	c.refreshButton.Enable()
+	c.cancelButton.Disable()
+	c.runButton.SetText(runButtonText(c.snapshot.Kind))
+	if c.mode == viewStatus {
+		c.setFooter(layout.NewSpacer(), c.refreshButton, c.runButton)
+		if c.snapshot.Kind == setupstate.MissingCLI || c.snapshot.Kind == setupstate.UnsupportedCLI {
+			c.runButton.Disable()
+			return
+		}
+		c.runButton.Enable()
+	}
+}
+
+func (c *controller) startSetupFlow() {
+	c.mode = viewURL
+	c.setupURL = strings.TrimSpace(c.snapshot.Status.DefaultURL)
+	c.urlEntry.SetText(c.setupURL)
+	c.renderURLStep()
+}
+
+func (c *controller) renderURLStep() {
+	c.mode = viewURL
+	c.statusLabel.SetText("Set Obot URL")
+	c.detailLabel.SetText("Enter the Obot server URL to use for this setup run.")
+	c.statusIcon.SetResource(theme.InfoIcon())
+	c.statusPanelBG.FillColor = panelInfoColor
+	c.statusPanelBG.Refresh()
+	c.setBody(
+		c.statusSection(),
+		section("Obot URL", panelSectionColor, widget.NewForm(widget.NewFormItem("URL", c.urlEntry))),
+	)
+
+	backButton := widget.NewButtonWithIcon("Back", theme.NavigateBackIcon(), c.showStatusView)
+	nextButton := widget.NewButtonWithIcon("Continue", theme.NavigateNextIcon(), c.continueFromURL)
+	c.setFooter(layout.NewSpacer(), backButton, nextButton)
+}
+
+func (c *controller) continueFromURL() {
+	url := strings.TrimSpace(c.urlEntry.Text)
+	if url == "" {
+		c.setBody(
+			c.statusSection(),
+			section("Obot URL", panelSectionColor, widget.NewForm(widget.NewFormItem("URL", c.urlEntry))),
+			messageCard(theme.WarningIcon(), "Enter the Obot server URL before continuing."),
+		)
+		return
+	}
+	c.setupURL = url
+	c.loadAgentsForSetup()
+}
+
+func (c *controller) loadAgentsForSetup() {
+	c.mode = viewAgents
+	c.statusLabel.SetText("Looking for local agents")
+	c.detailLabel.SetText("Checking this machine for supported local agent integrations.")
+	c.statusIcon.SetResource(theme.InfoIcon())
+	c.statusPanelBG.FillColor = panelInfoColor
+	c.statusPanelBG.Refresh()
+	c.agentsBox.RemoveAll()
+	c.agentsBox.Add(helperRow(theme.InfoIcon(), "Detecting supported agents...", ""))
+	c.agentsBox.Refresh()
+	c.setBody(c.statusSection(), c.agentsSection())
+	c.setFooter(layout.NewSpacer())
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		result, err := c.cfg.Client.DetectAgents(ctx)
+		fyne.Do(func() {
+			c.snapshot.AgentsErr = err
+			if err == nil {
+				c.snapshot.Agents = result.Agents
+				c.resetSelectedAgents(result.Agents)
+			} else {
+				c.snapshot.Agents = nil
+				c.selectedAgents = map[string]bool{}
+			}
+			c.renderAgentStep()
+		})
+	}()
+}
+
+func (c *controller) renderAgentStep() {
+	c.mode = viewAgents
+	c.statusLabel.SetText("Select local agents")
+	c.detailLabel.SetText("Choose which detected local agents should receive the Obot bootstrap integration.")
+	c.statusIcon.SetResource(theme.InfoIcon())
+	c.statusPanelBG.FillColor = panelInfoColor
+	c.statusPanelBG.Refresh()
+	c.renderAgentChoices(c.snapshot)
+	c.setBody(c.statusSection(), c.agentsSection())
+
+	backButton := widget.NewButtonWithIcon("Back", theme.NavigateBackIcon(), c.renderURLStep)
+	startButton := widget.NewButtonWithIcon("Start Setup", theme.MediaPlayIcon(), c.runSetup)
+	c.setFooter(layout.NewSpacer(), backButton, startButton)
+}
+
+func (c *controller) showStatusView() {
+	c.mode = viewStatus
+	c.render(c.snapshot)
+}
+
+func (c *controller) runSetup() {
+	url := strings.TrimSpace(c.urlEntry.Text)
+	if url == "" {
+		c.renderURLStep()
+		return
+	}
+
+	agentIDs := c.selectedAgentIDs()
+	ctx, cancel := context.WithCancel(context.Background())
+	c.setupCancel = cancel
+	c.running = true
+	c.mode = viewRun
+	c.resetProgress()
+	c.addProgress(theme.InfoIcon(), "Starting setup", "Obot will open browser login if the server requires authentication.")
+	c.statusLabel.SetText("Running setup")
+	c.detailLabel.SetText("Keep this window open while Obot configures the CLI and selected local agents.")
+	c.statusIcon.SetResource(theme.InfoIcon())
+	c.statusPanelBG.FillColor = panelInfoColor
+	c.statusPanelBG.Refresh()
+	c.setBody(c.statusSection(), section("Progress", panelSectionColor, c.progressBox))
+	c.setFooter(layout.NewSpacer(), c.cancelButton)
+	c.updateButtons()
+
+	go func() {
+		hadErrorEvent := false
+		client := c.cfg.Client
+		err := client.RunSetup(ctx, cli.SetupOptions{
+			URL:      url,
+			AgentIDs: agentIDs,
+		}, func(event cli.SetupProgressEvent) {
+			if event.Type == cli.SetupProgressError {
+				hadErrorEvent = true
+			}
+			c.renderSetupEvent(event)
+		})
+
+		fyne.Do(func() {
+			c.running = false
+			c.setupCancel = nil
+		})
+
+		switch {
+		case errors.Is(err, context.Canceled):
+			c.addProgress(theme.WarningIcon(), "Setup canceled", "The running setup process was stopped.")
+		case err != nil && !hadErrorEvent:
+			c.addProgress(theme.ErrorIcon(), "Setup failed", err.Error())
+		case err == nil:
+			c.addProgress(theme.ConfirmIcon(), "Setup finished", "Refreshing local setup status.")
+		}
+		fyne.Do(c.renderDoneFooter)
+	}()
+}
+
+func (c *controller) renderDoneFooter() {
+	doneButton := widget.NewButtonWithIcon("Back to Status", theme.NavigateBackIcon(), func() {
+		c.mode = viewStatus
+		go c.load()
+	})
+	c.setFooter(layout.NewSpacer(), doneButton)
+}
+
+func (c *controller) cancelSetup() {
+	if c.setupCancel != nil {
+		c.setupCancel()
+	}
+}
+
+func (c *controller) selectedAgentIDs() []string {
+	var ids []string
+	for _, agent := range c.snapshot.Agents {
+		if agent.State == "present" && c.selectedAgents[agent.ID] {
+			ids = append(ids, agent.ID)
+		}
+	}
+	return ids
+}
+
+func (c *controller) resetSelectedAgents(agents []cli.Agent) {
+	c.selectedAgents = map[string]bool{}
+	for _, agent := range agents {
+		c.selectedAgents[agent.ID] = agent.State == "present"
+	}
+}
+
+func (c *controller) resetProgress() {
+	fyne.Do(func() {
+		c.progressBox.RemoveAll()
+		c.progressBox.Refresh()
+	})
+}
+
+func (c *controller) renderSetupEvent(event cli.SetupProgressEvent) {
+	switch event.Type {
+	case cli.SetupProgressAuthStarted:
+		c.addProgress(theme.InfoIcon(), "Login started", setupEventURLDetail(event))
+	case cli.SetupProgressAuthCompleted:
+		c.addProgress(theme.ConfirmIcon(), "Login completed", setupEventURLDetail(event))
+	case cli.SetupProgressConfigSaved:
+		c.addProgress(theme.ConfirmIcon(), "CLI configuration saved", setupEventURLDetail(event))
+	case cli.SetupProgressAgentInstalled:
+		c.addProgress(theme.ConfirmIcon(), "Installed in "+event.DisplayName, strings.TrimSpace(event.Message))
+	case cli.SetupProgressComplete:
+		c.addProgress(theme.ConfirmIcon(), "Setup complete", setupEventURLDetail(event))
+	case cli.SetupProgressError:
+		c.addProgress(theme.ErrorIcon(), "Setup error", cli.SetupErrorDisplayMessage(event))
+	default:
+		c.addProgress(theme.InfoIcon(), displayState(event.Type), strings.TrimSpace(event.Message))
+	}
+}
+
+func (c *controller) addProgress(icon fyne.Resource, title, detail string) {
+	fyne.Do(func() {
+		c.progressBox.Add(helperRow(icon, title, detail))
+		c.progressBox.Refresh()
+	})
+}
+
 func helperRow(icon fyne.Resource, title, detail string) fyne.CanvasObject {
 	titleLabel := widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	if detail == "" {
@@ -266,12 +582,36 @@ func helperRow(icon fyne.Resource, title, detail string) fyne.CanvasObject {
 	return container.NewBorder(nil, nil, widget.NewIcon(icon), nil, container.NewVBox(titleLabel, detailLabel))
 }
 
-func agentRow(agent cli.Agent) fyne.CanvasObject {
+func agentStatusRow(agent cli.Agent) fyne.CanvasObject {
 	title := agent.DisplayName
 	if state := displayState(agent.State); state != "" {
 		title += " - " + state
 	}
 	return helperRow(agentIcon(agent.State), title, agent.Reason)
+}
+
+func (c *controller) agentCheckboxRow(agent cli.Agent) fyne.CanvasObject {
+	title := agent.DisplayName
+	if state := displayState(agent.State); state != "" {
+		title += " - " + state
+	}
+	if _, ok := c.selectedAgents[agent.ID]; !ok {
+		c.selectedAgents[agent.ID] = agent.State == "present"
+	}
+	check := widget.NewCheck(title, func(checked bool) {
+		c.selectedAgents[agent.ID] = checked
+	})
+	check.SetChecked(c.selectedAgents[agent.ID] && agent.State == "present")
+	if agent.State != "present" {
+		check.Disable()
+	}
+	if agent.Reason == "" {
+		return container.NewBorder(nil, nil, widget.NewIcon(agentIcon(agent.State)), nil, check)
+	}
+
+	detailLabel := widget.NewLabel(agent.Reason)
+	detailLabel.Wrapping = fyne.TextWrapWord
+	return container.NewBorder(nil, nil, widget.NewIcon(agentIcon(agent.State)), nil, container.NewVBox(check, detailLabel))
 }
 
 func agentSeparator() fyne.CanvasObject {
@@ -319,6 +659,17 @@ func statusTitle(kind setupstate.Kind) string {
 	}
 }
 
+func runButtonText(kind setupstate.Kind) string {
+	switch kind {
+	case setupstate.AlreadyConfigured:
+		return "Rerun Setup"
+	case setupstate.NeedsLoginRepair:
+		return "Repair Login"
+	default:
+		return "Run Setup"
+	}
+}
+
 func statusDetail(snapshot setupstate.Snapshot) string {
 	switch snapshot.Kind {
 	case setupstate.MissingCLI:
@@ -356,6 +707,16 @@ func tokenText(snapshot setupstate.Snapshot) string {
 		return "Valid"
 	}
 	return "Missing or invalid"
+}
+
+func setupEventURLDetail(event cli.SetupProgressEvent) string {
+	if strings.TrimSpace(event.URL) == "" {
+		return strings.TrimSpace(event.Message)
+	}
+	if strings.TrimSpace(event.Message) == "" {
+		return event.URL
+	}
+	return event.URL + "\n" + strings.TrimSpace(event.Message)
 }
 
 func warningsText(snapshot setupstate.Snapshot) string {

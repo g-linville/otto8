@@ -32,8 +32,9 @@ func (ExecRunner) Run(ctx context.Context, path string, args ...string) ([]byte,
 }
 
 type Client struct {
-	Path   string
-	Runner Runner
+	Path        string
+	Runner      Runner
+	SetupRunner SetupRunner
 }
 
 func (c Client) Status(ctx context.Context) (Status, error) {
