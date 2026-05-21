@@ -69,6 +69,7 @@ type controller struct {
 	cancelButton  *widget.Button
 	body          *fyne.Container
 	footer        *fyne.Container
+	scroller      *container.Scroll
 
 	mode           viewMode
 	snapshot       setupstate.Snapshot
@@ -117,6 +118,7 @@ func (c *controller) content() fyne.CanvasObject {
 	c.statusPanelBG = panelBackground(statusPanelColor(setupstate.FirstRun), panelBorderColor)
 	c.body = container.NewVBox(c.statusSection(), c.messagesBox)
 	scrollContent := container.NewBorder(nil, nil, nil, rightGutter(), c.body)
+	c.scroller = container.NewVScroll(scrollContent)
 	c.footer = container.NewHBox(layout.NewSpacer(), c.refreshButton, c.runButton)
 
 	go c.load()
@@ -126,7 +128,7 @@ func (c *controller) content() fyne.CanvasObject {
 		container.NewPadded(c.footer),
 		nil,
 		nil,
-		container.NewPadded(container.NewVScroll(scrollContent)),
+		container.NewPadded(c.scroller),
 	)
 }
 
@@ -137,10 +139,8 @@ func titleHeader() fyne.CanvasObject {
 	icon.SetMinSize(fyne.NewSize(40, 40))
 
 	title := widget.NewLabelWithStyle("Obot Setup", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	subtitle := widget.NewLabel("Local CLI and agent setup")
-	subtitle.TextStyle = fyne.TextStyle{Italic: true}
 
-	return container.NewHBox(icon, container.NewVBox(title, subtitle))
+	return container.NewHBox(icon, title)
 }
 
 func section(title string, fill color.Color, content fyne.CanvasObject) fyne.CanvasObject {
@@ -194,6 +194,21 @@ func (c *controller) cliSection() fyne.CanvasObject {
 
 func (c *controller) agentsSection() fyne.CanvasObject {
 	return section("Detected Agents", panelSectionColor, c.agentsBox)
+}
+
+func (c *controller) urlSetupSection() fyne.CanvasObject {
+	content := container.NewBorder(
+		nil,
+		nil,
+		container.NewPadded(c.statusIcon),
+		nil,
+		container.NewVBox(
+			c.statusLabel,
+			c.detailLabel,
+			widget.NewForm(widget.NewFormItem("URL", c.urlEntry)),
+		),
+	)
+	return panel(c.statusPanelBG, content)
 }
 
 func (c *controller) load() {
@@ -369,6 +384,13 @@ func (c *controller) startSetupFlow() {
 	c.setupURL = strings.TrimSpace(c.snapshot.Status.DefaultURL)
 	c.urlEntry.SetText(c.setupURL)
 	c.renderURLStep()
+	c.scrollToTop()
+}
+
+func (c *controller) scrollToTop() {
+	if c.scroller != nil {
+		c.scroller.ScrollToTop()
+	}
 }
 
 func (c *controller) renderURLStep() {
@@ -378,10 +400,7 @@ func (c *controller) renderURLStep() {
 	c.statusIcon.SetResource(theme.InfoIcon())
 	c.statusPanelBG.FillColor = panelInfoColor
 	c.statusPanelBG.Refresh()
-	c.setBody(
-		c.statusSection(),
-		section("Obot URL", panelSectionColor, widget.NewForm(widget.NewFormItem("URL", c.urlEntry))),
-	)
+	c.setBody(c.urlSetupSection())
 
 	backButton := widget.NewButtonWithIcon("Back", theme.NavigateBackIcon(), c.showStatusView)
 	nextButton := widget.NewButtonWithIcon("Continue", theme.NavigateNextIcon(), c.continueFromURL)
@@ -392,8 +411,7 @@ func (c *controller) continueFromURL() {
 	url := strings.TrimSpace(c.urlEntry.Text)
 	if url == "" {
 		c.setBody(
-			c.statusSection(),
-			section("Obot URL", panelSectionColor, widget.NewForm(widget.NewFormItem("URL", c.urlEntry))),
+			c.urlSetupSection(),
 			messageCard(theme.WarningIcon(), "Enter the Obot server URL before continuing."),
 		)
 		return
@@ -467,7 +485,7 @@ func (c *controller) runSetup() {
 	c.running = true
 	c.mode = viewRun
 	c.resetProgress()
-	c.addProgress(theme.InfoIcon(), "Starting setup", "Obot will open browser login if the server requires authentication.")
+	c.setProgress(theme.InfoIcon(), "Starting setup", "Obot will open browser login if the server requires authentication.")
 	c.statusLabel.SetText("Running setup")
 	c.detailLabel.SetText("Keep this window open while Obot configures the CLI and selected local agents.")
 	c.statusIcon.SetResource(theme.InfoIcon())
@@ -497,11 +515,11 @@ func (c *controller) runSetup() {
 
 		switch {
 		case errors.Is(err, context.Canceled):
-			c.addProgress(theme.WarningIcon(), "Setup canceled", "The running setup process was stopped.")
+			c.setProgress(theme.WarningIcon(), "Setup canceled", "The running setup process was stopped.")
 		case err != nil && !hadErrorEvent:
-			c.addProgress(theme.ErrorIcon(), "Setup failed", err.Error())
+			c.setProgress(theme.ErrorIcon(), "Setup failed", err.Error())
 		case err == nil:
-			c.addProgress(theme.ConfirmIcon(), "Setup finished", "Refreshing local setup status.")
+			c.setProgress(theme.ConfirmIcon(), "Setup complete", "Obot CLI and selected local agents are configured.")
 		}
 		fyne.Do(c.renderDoneFooter)
 	}()
@@ -548,24 +566,25 @@ func (c *controller) resetProgress() {
 func (c *controller) renderSetupEvent(event cli.SetupProgressEvent) {
 	switch event.Type {
 	case cli.SetupProgressAuthStarted:
-		c.addProgress(theme.InfoIcon(), "Login started", setupEventURLDetail(event))
+		c.setProgress(theme.InfoIcon(), "Login started", setupEventURLDetail(event))
 	case cli.SetupProgressAuthCompleted:
-		c.addProgress(theme.ConfirmIcon(), "Login completed", setupEventURLDetail(event))
+		c.setProgress(theme.ConfirmIcon(), "Login completed", setupEventURLDetail(event))
 	case cli.SetupProgressConfigSaved:
-		c.addProgress(theme.ConfirmIcon(), "CLI configuration saved", setupEventURLDetail(event))
+		c.setProgress(theme.ConfirmIcon(), "CLI configuration saved", setupEventURLDetail(event))
 	case cli.SetupProgressAgentInstalled:
-		c.addProgress(theme.ConfirmIcon(), "Installed in "+event.DisplayName, strings.TrimSpace(event.Message))
+		c.setProgress(theme.ConfirmIcon(), "Installed in "+event.DisplayName, strings.TrimSpace(event.Message))
 	case cli.SetupProgressComplete:
-		c.addProgress(theme.ConfirmIcon(), "Setup complete", setupEventURLDetail(event))
+		c.setProgress(theme.ConfirmIcon(), "Setup complete", setupEventURLDetail(event))
 	case cli.SetupProgressError:
-		c.addProgress(theme.ErrorIcon(), "Setup error", cli.SetupErrorDisplayMessage(event))
+		c.setProgress(theme.ErrorIcon(), "Setup error", cli.SetupErrorDisplayMessage(event))
 	default:
-		c.addProgress(theme.InfoIcon(), displayState(event.Type), strings.TrimSpace(event.Message))
+		c.setProgress(theme.InfoIcon(), displayState(event.Type), strings.TrimSpace(event.Message))
 	}
 }
 
-func (c *controller) addProgress(icon fyne.Resource, title, detail string) {
+func (c *controller) setProgress(icon fyne.Resource, title, detail string) {
 	fyne.Do(func() {
+		c.progressBox.RemoveAll()
 		c.progressBox.Add(helperRow(icon, title, detail))
 		c.progressBox.Refresh()
 	})
