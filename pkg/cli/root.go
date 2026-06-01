@@ -40,6 +40,7 @@ func New() *cobra.Command {
 		Client: newClient(),
 	}
 	return cmd.Command(root,
+		&Audit{root: root},
 		&Server{},
 		&Login{root: root},
 		&Logout{root: root},

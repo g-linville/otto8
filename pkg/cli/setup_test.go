@@ -62,7 +62,7 @@ func TestSetupNonInteractiveExplicitInstallsClaudeCode(t *testing.T) {
 	if !strings.Contains(string(content), "rendered for `claude-code`") {
 		t.Fatalf("unexpected bootstrap content:\n%s", content)
 	}
-	if !strings.Contains(stdout.String(), "Installed Obot bootstrap skills for Claude Code") {
+	if !strings.Contains(stdout.String(), "Installed Obot bootstrap skills and audit hooks for Claude Code") {
 		t.Fatalf("expected install message, got stdout:\n%s", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "Logged in to https://obot.example.com") {

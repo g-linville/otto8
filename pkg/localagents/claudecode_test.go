@@ -2,6 +2,7 @@ package localagents
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,8 +47,8 @@ func TestClaudeCodeInstallBootstrapWritesExpectedSkills(t *testing.T) {
 	if result.AgentID != ClaudeCodeAgentID {
 		t.Fatalf("AgentID = %q, want %q", result.AgentID, ClaudeCodeAgentID)
 	}
-	if len(result.Installed) != 4 {
-		t.Fatalf("Installed count = %d, want 4: %#v", len(result.Installed), result.Installed)
+	if len(result.Installed) != 5 {
+		t.Fatalf("Installed count = %d, want 5: %#v", len(result.Installed), result.Installed)
 	}
 
 	for _, name := range []string{"obot", "obot-search-skills", "obot-install-skill", "obot-scan"} {
@@ -56,6 +57,53 @@ func TestClaudeCodeInstallBootstrapWritesExpectedSkills(t *testing.T) {
 			t.Fatalf("%s content did not look like an Obot bootstrap skill:\n%s", name, content)
 		}
 	}
+
+	assertClaudeAuditHook(t, filepath.Join(home, ".claude", "settings.json"), "PostToolUse", 1)
+	assertClaudeAuditHook(t, filepath.Join(home, ".claude", "settings.json"), "PostToolUseFailure", 1)
+}
+
+func TestClaudeCodeInstallBootstrapPreservesAndDeduplicatesHooks(t *testing.T) {
+	home := t.TempDir()
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{
+  "theme": "dark",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo existing"
+          }
+        ]
+      }
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewClaudeCode().InstallBootstrap(t.Context(), home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewClaudeCode().InstallBootstrap(t.Context(), home); err != nil {
+		t.Fatal(err)
+	}
+
+	content := readFile(t, settingsPath)
+	if !strings.Contains(content, `"theme": "dark"`) {
+		t.Fatalf("expected existing setting to be preserved:\n%s", content)
+	}
+	if !strings.Contains(content, "echo existing") {
+		t.Fatalf("expected existing hook to be preserved:\n%s", content)
+	}
+	assertClaudeAuditHook(t, settingsPath, "PostToolUse", 1)
+	assertClaudeAuditHook(t, settingsPath, "PostToolUseFailure", 1)
 }
 
 func TestClaudeCodeInstallBootstrapOverwritesExistingContent(t *testing.T) {
@@ -179,5 +227,30 @@ func assertFileContains(t *testing.T, path, substr string) {
 	content := readFile(t, path)
 	if !strings.Contains(content, substr) {
 		t.Fatalf("%s did not contain %q:\n%s", path, substr, content)
+	}
+}
+
+func assertClaudeAuditHook(t *testing.T, settingsPath, event string, want int) {
+	t.Helper()
+	content := readFile(t, settingsPath)
+	var settings struct {
+		Hooks map[string][]claudeHookMatcher `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(content), &settings); err != nil {
+		t.Fatal(err)
+	}
+	got := 0
+	for _, matcher := range settings.Hooks[event] {
+		if matcher.Matcher != "*" {
+			continue
+		}
+		for _, hook := range matcher.Hooks {
+			if hook.Type == "command" && strings.Contains(hook.Command, " audit claude-code-hook") {
+				got++
+			}
+		}
+	}
+	if got != want {
+		t.Fatalf("%s audit hook count = %d, want %d:\n%s", event, got, want, content)
 	}
 }

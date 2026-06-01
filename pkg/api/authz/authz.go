@@ -331,6 +331,7 @@ var (
 			"POST /api/logout-all",
 			"GET /api/version",
 			"GET /api/setup/oauth-complete",
+			"POST /api/local-agent-audit-logs",
 
 			// API key management for user's own keys
 			"POST /api/api-keys",
