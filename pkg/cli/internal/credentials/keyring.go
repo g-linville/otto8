@@ -39,6 +39,10 @@ func NewKeyringStore() *KeyringStore {
 	return newKeyringStoreWith(DefaultService, keyringFuncs{})
 }
 
+func NewAuditKeyringStore() *KeyringStore {
+	return newKeyringStoreWith(AuditService, keyringFuncs{})
+}
+
 func newKeyringStoreWith(service string, keyring keyring) *KeyringStore {
 	if service == "" {
 		service = DefaultService

@@ -6,6 +6,9 @@ const (
 	// DefaultService is the OS keyring service name used for Obot CLI
 	// credentials.
 	DefaultService = "obot"
+	// AuditService is the OS keyring service name used for local agent
+	// audit-log append API keys.
+	AuditService = "obot-local-agent-audit"
 )
 
 // ErrNotFound is returned when no credential exists for the requested

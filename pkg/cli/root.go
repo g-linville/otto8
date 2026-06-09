@@ -46,6 +46,7 @@ func New() *cobra.Command {
 		&MCP{root: root},
 		&Scan{root: root},
 		&Setup{root: root},
+		&Audit{root: root},
 		&Skills{root: root},
 		&Version{},
 		&Daemon{},

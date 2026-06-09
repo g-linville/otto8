@@ -24,6 +24,7 @@ import (
 )
 
 var credentialStore credentials.Store = credentials.NewKeyringStore()
+var auditCredentialStore credentials.Store = credentials.NewAuditKeyringStore()
 var openBrowser = browser.OpenURL
 
 type nonInteractiveContextKey struct{}
@@ -120,6 +121,21 @@ func ExistingToken(ctx context.Context, baseURL string) (string, error) {
 	}
 	if !testToken(ctx, baseURL, token) {
 		return "", fmt.Errorf("stored login for %s is not valid", appURL)
+	}
+	return token, nil
+}
+
+func AuditToken(baseURL string) (string, error) {
+	appURL, err := AppURLForAPIBaseURL(baseURL)
+	if err != nil {
+		return "", err
+	}
+	token, err := auditCredentialStore.Get(appURL)
+	if err != nil {
+		if credentials.IsNotFound(err) {
+			return "", fmt.Errorf("no local agent audit API key for %s", appURL)
+		}
+		return "", err
 	}
 	return token, nil
 }
