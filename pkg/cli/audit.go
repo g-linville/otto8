@@ -21,6 +21,7 @@ type Audit struct {
 	root       *Obot
 	auditToken func(string) (string, error)
 	submit     func(context.Context, *apiclient.Client, types.LocalAgentAuditLogIngest) error // for unit testing purposes
+	spool      func(string) (auditSpool, error)                                               // for unit testing purposes
 }
 
 func (a *Audit) Customize(cmd *cobra.Command) {
@@ -65,6 +66,11 @@ func (a *Audit) Run(cmd *cobra.Command, _ []string) error {
 		a.debugf(cmd, "submit audit event: API client is not configured\n")
 		return nil
 	}
+	appURL, err := internal.AppURLForAPIBaseURL(client.BaseURL)
+	if err != nil {
+		a.debugf(cmd, "submit audit event: %v\n", err)
+		return nil
+	}
 
 	tokenFn := a.auditToken
 	if tokenFn == nil {
@@ -73,6 +79,7 @@ func (a *Audit) Run(cmd *cobra.Command, _ []string) error {
 	token, err := tokenFn(client.BaseURL)
 	if err != nil {
 		a.debugf(cmd, "submit audit event: %v\n", err)
+		a.appendSpool(cmd, appURL, auditLog)
 		return nil
 	}
 
@@ -85,10 +92,45 @@ func (a *Audit) Run(cmd *cobra.Command, _ []string) error {
 	}
 	if err := submitter(cmd.Context(), client.WithToken(token), auditLog); err != nil {
 		a.debugf(cmd, "submit audit event: %v\n", err)
+		a.appendSpool(cmd, appURL, auditLog)
 		return nil
 	}
 
+	drainCtx, cancel := context.WithTimeout(cmd.Context(), defaultAuditSpoolDrainTimeout)
+	defer cancel()
+	if err := a.drainSpool(drainCtx, appURL, func(ctx context.Context, auditLog types.LocalAgentAuditLogIngest) error {
+		return submitter(ctx, client.WithToken(token), auditLog)
+	}); err != nil {
+		a.debugf(cmd, "drain audit spool: %v\n", err)
+	}
+
 	return nil
+}
+
+func (a *Audit) appendSpool(cmd *cobra.Command, appURL string, auditLog types.LocalAgentAuditLogIngest) {
+	spool, err := a.auditSpool(appURL)
+	if err != nil {
+		a.debugf(cmd, "open audit spool: %v\n", err)
+		return
+	}
+	if err := spool.Append(cmd.Context(), auditLog); err != nil {
+		a.debugf(cmd, "append audit spool: %v\n", err)
+	}
+}
+
+func (a *Audit) drainSpool(ctx context.Context, appURL string, submit auditSubmitFunc) error {
+	spool, err := a.auditSpool(appURL)
+	if err != nil {
+		return fmt.Errorf("open audit spool: %w", err)
+	}
+	return spool.Drain(ctx, submit)
+}
+
+func (a *Audit) auditSpool(appURL string) (auditSpool, error) {
+	if a.spool != nil {
+		return a.spool(appURL)
+	}
+	return newDefaultAuditSpool(appURL)
 }
 
 func readAuditStdin(r io.Reader) ([]byte, bool, error) {

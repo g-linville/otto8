@@ -43,6 +43,10 @@ func NewAuditKeyringStore() *KeyringStore {
 	return newKeyringStoreWith(AuditService, keyringFuncs{})
 }
 
+func NewAuditSpoolKeyringStore() *KeyringStore {
+	return newKeyringStoreWith(AuditSpoolService, keyringFuncs{})
+}
+
 func newKeyringStoreWith(service string, keyring keyring) *KeyringStore {
 	if service == "" {
 		service = DefaultService

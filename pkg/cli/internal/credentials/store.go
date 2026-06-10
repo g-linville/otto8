@@ -9,6 +9,9 @@ const (
 	// AuditService is the OS keyring service name used for local agent
 	// audit-log append API keys.
 	AuditService = "obot-local-agent-audit"
+	// AuditSpoolService is the OS keyring service name used for local
+	// agent audit spool encryption keys.
+	AuditSpoolService = "obot-local-agent-audit-spool"
 )
 
 // ErrNotFound is returned when no credential exists for the requested
