@@ -5,12 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/obot-platform/obot/apiclient"
+	apitypes "github.com/obot-platform/obot/apiclient/types"
+	"github.com/obot-platform/obot/pkg/cli/internal/credentials"
 	"github.com/obot-platform/obot/pkg/cli/internal/localconfig"
 	"github.com/obot-platform/obot/pkg/localagents"
 	"github.com/obot-platform/obot/pkg/skillformat"
@@ -241,6 +246,188 @@ func TestSetupJSONProgressSuccessfulSequence(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "Logged in to") {
 		t.Fatalf("JSON stderr should not include routine login status, got:\n%s", stderr.String())
+	}
+}
+
+func TestSetupAuditCredentialReusesValidStoredKey(t *testing.T) {
+	store := newFakeSetupCredentialStore()
+	var postCalled bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/api-keys-self":
+			if r.Header.Get("Authorization") != "Bearer stored-audit-key" {
+				t.Fatalf("unexpected self-inspection auth header %q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(apitypes.APIKeySelfInspectionResponse{
+				APIKey: apitypes.APIKey{
+					ID:                 17,
+					CanAppendAuditLogs: true,
+				},
+			})
+		case "/api/api-keys":
+			postCalled = true
+			t.Fatalf("valid stored audit key should not be replaced")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	store.tokens[srv.URL] = "stored-audit-key"
+	client := &apiclient.Client{BaseURL: srv.URL + "/api", Token: "login-token"}
+	var stdout bytes.Buffer
+	progress := newSetupProgressWriter(setupTestCommand(nil, &stdout, nil), true)
+
+	if err := ensureSetupAuditCredentialWithStore(t.Context(), client, srv.URL, progress, store); err != nil {
+		t.Fatal(err)
+	}
+	if postCalled {
+		t.Fatalf("create API key endpoint should not be called")
+	}
+	if got := store.tokens[srv.URL]; got != "stored-audit-key" {
+		t.Fatalf("stored key = %q, want existing key", got)
+	}
+
+	events := setupProgressEvents(t, stdout.Bytes())
+	gotTypes := make([]string, 0, len(events))
+	for _, event := range events {
+		gotTypes = append(gotTypes, event.Type)
+	}
+	wantTypes := []string{"audit_key_validation_started", "audit_key_reused", "audit_key_completed"}
+	if strings.Join(gotTypes, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("event types = %v, want %v\nstdout:\n%s", gotTypes, wantTypes, stdout.String())
+	}
+	if events[1].APIKeyID != 17 || events[2].Message != "reused" {
+		t.Fatalf("unexpected reuse events: %#v", events)
+	}
+}
+
+func TestSetupAuditCredentialCreatesReplacementWhenStoredKeyUnusable(t *testing.T) {
+	tests := []struct {
+		name       string
+		storedKey  string
+		inspect    func(http.ResponseWriter, *http.Request)
+		wantGet    bool
+		wantReason string
+	}{
+		{
+			name:       "missing",
+			wantReason: "no stored audit API key",
+		},
+		{
+			name:      "invalid or deleted",
+			storedKey: "bad-key",
+			inspect: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte("invalid or expired API key"))
+			},
+			wantGet:    true,
+			wantReason: "error code 401",
+		},
+		{
+			name:      "under scoped",
+			storedKey: "under-scoped-key",
+			inspect: func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(apitypes.APIKeySelfInspectionResponse{
+					APIKey: apitypes.APIKey{ID: 18, CanAppendAuditLogs: false},
+				})
+			},
+			wantGet:    true,
+			wantReason: "stored audit API key is invalid",
+		},
+		{
+			name:      "expired",
+			storedKey: "expired-key",
+			inspect: func(w http.ResponseWriter, _ *http.Request) {
+				expiresAt := time.Now().Add(-time.Minute)
+				_ = json.NewEncoder(w).Encode(apitypes.APIKeySelfInspectionResponse{
+					APIKey: apitypes.APIKey{ID: 19, CanAppendAuditLogs: true, ExpiresAt: apitypes.NewTime(expiresAt)},
+				})
+			},
+			wantGet:    true,
+			wantReason: "stored audit API key is invalid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeSetupCredentialStore()
+			var sawInspect bool
+			var sawCreate bool
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/api-keys-self":
+					sawInspect = true
+					if r.Header.Get("Authorization") != "Bearer "+tt.storedKey {
+						t.Fatalf("unexpected self-inspection auth header %q", r.Header.Get("Authorization"))
+					}
+					tt.inspect(w, r)
+				case "/api/api-keys":
+					sawCreate = true
+					if r.Header.Get("Authorization") != "Bearer login-token" {
+						t.Fatalf("unexpected create auth header %q", r.Header.Get("Authorization"))
+					}
+					var req apitypes.APIKeyCreateRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatal(err)
+					}
+					if !req.CanAppendAuditLogs || req.CanAccessSkills || len(req.MCPServerIDs) != 0 {
+						t.Fatalf("unexpected create request: %#v", req)
+					}
+					_ = json.NewEncoder(w).Encode(apitypes.APIKeyCreateResponse{
+						APIKey: apitypes.APIKey{ID: 99, CanAppendAuditLogs: true},
+						Key:    "replacement-audit-key",
+					})
+				default:
+					t.Fatalf("unexpected path %s", r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			if tt.storedKey != "" {
+				store.tokens[srv.URL] = tt.storedKey
+			}
+			client := &apiclient.Client{BaseURL: srv.URL + "/api", Token: "login-token"}
+			var stdout bytes.Buffer
+			progress := newSetupProgressWriter(setupTestCommand(nil, &stdout, nil), true)
+
+			if err := ensureSetupAuditCredentialWithStore(t.Context(), client, srv.URL, progress, store); err != nil {
+				t.Fatal(err)
+			}
+			if sawInspect != tt.wantGet {
+				t.Fatalf("self-inspection called = %t, want %t", sawInspect, tt.wantGet)
+			}
+			if !sawCreate {
+				t.Fatalf("create API key endpoint was not called")
+			}
+			if got := store.tokens[srv.URL]; got != "replacement-audit-key" {
+				t.Fatalf("stored key = %q, want replacement", got)
+			}
+
+			events := setupProgressEvents(t, stdout.Bytes())
+			gotTypes := make([]string, 0, len(events))
+			for _, event := range events {
+				gotTypes = append(gotTypes, event.Type)
+			}
+			wantTypes := []string{
+				"audit_key_validation_started",
+				"audit_key_validation_failed",
+				"audit_key_creation_started",
+				"audit_key_created",
+				"audit_key_completed",
+			}
+			if strings.Join(gotTypes, ",") != strings.Join(wantTypes, ",") {
+				t.Fatalf("event types = %v, want %v\nstdout:\n%s", gotTypes, wantTypes, stdout.String())
+			}
+			if !strings.Contains(events[1].Message, tt.wantReason) {
+				t.Fatalf("validation failure message = %q, want it to contain %q", events[1].Message, tt.wantReason)
+			}
+			if events[3].APIKeyID != 99 || events[4].Message != "created" {
+				t.Fatalf("unexpected create events: %#v", events[3:5])
+			}
+		})
 	}
 }
 
@@ -664,6 +851,42 @@ func TestSetupDetectClientsJSON(t *testing.T) {
 	if got.Clients[0].Reason == "" {
 		t.Fatalf("expected reason for first client")
 	}
+}
+
+type fakeSetupCredentialStore struct {
+	tokens map[string]string
+	err    error
+}
+
+func newFakeSetupCredentialStore() *fakeSetupCredentialStore {
+	return &fakeSetupCredentialStore{tokens: map[string]string{}}
+}
+
+func (f *fakeSetupCredentialStore) Get(appURL string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	token, ok := f.tokens[appURL]
+	if !ok {
+		return "", credentials.ErrNotFound
+	}
+	return token, nil
+}
+
+func (f *fakeSetupCredentialStore) Set(appURL, token string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.tokens[appURL] = token
+	return nil
+}
+
+func (f *fakeSetupCredentialStore) Delete(appURL string) error {
+	if f.err != nil {
+		return f.err
+	}
+	delete(f.tokens, appURL)
+	return nil
 }
 
 func setupTestRoot(fetcher func(context.Context, string, bool, bool) (string, error)) *Obot {

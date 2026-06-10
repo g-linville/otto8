@@ -9,10 +9,14 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/obot-platform/cmd"
+	"github.com/obot-platform/obot/apiclient"
+	apitypes "github.com/obot-platform/obot/apiclient/types"
 	cliinternal "github.com/obot-platform/obot/pkg/cli/internal"
+	"github.com/obot-platform/obot/pkg/cli/internal/credentials"
 	"github.com/obot-platform/obot/pkg/cli/internal/localconfig"
 	"github.com/obot-platform/obot/pkg/localagents"
 	"github.com/spf13/cobra"
@@ -28,6 +32,10 @@ type Setup struct {
 
 	root *Obot
 }
+
+type setupAuditCredentialFlow func(context.Context, *apiclient.Client, string, setupProgressWriter) error // for unit testing purposes
+
+var runSetupAuditCredentialFlow setupAuditCredentialFlow = ensureSetupAuditCredential
 
 func (s *Setup) Customize(c *cobra.Command) {
 	c.Use = "setup"
@@ -89,7 +97,8 @@ func (s *Setup) run(cmd *cobra.Command, progress setupProgressWriter) error {
 	if err := progress.emit(setupProgressEvent{Type: setupProgressAuthStarted, URL: appURL}); err != nil {
 		return err
 	}
-	if _, err := s.root.Client.GetToken(ctx, false, false); err != nil {
+	token, err := s.root.Client.GetToken(ctx, false, false)
+	if err != nil {
 		return setupErrorf(setupAuthErrorCode(err), "authenticate with Obot: %w", err)
 	}
 	if err := progress.emit(setupProgressEvent{Type: setupProgressAuthCompleted, URL: appURL}); err != nil {
@@ -103,6 +112,14 @@ func (s *Setup) run(cmd *cobra.Command, progress setupProgressWriter) error {
 	}
 	if !progress.json {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Logged in to %s\n", appURL)
+	}
+
+	authClient := s.root.Client.WithToken(token)
+	if err := runSetupAuditCredentialFlow(ctx, authClient, appURL, progress); err != nil {
+		return err
+	}
+	if !progress.json {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Local agent tool-call audit logs are configured for %s. Raw tool inputs and results are encrypted and visible only to Auditors.\n", appURL)
 	}
 
 	selection, err := s.resolveClientSelection(cmd)
@@ -331,12 +348,19 @@ func (s *Setup) resolveAppURL(cmd *cobra.Command) (string, error) {
 }
 
 const (
-	setupProgressAuthStarted     = "auth_started"
-	setupProgressAuthCompleted   = "auth_completed"
-	setupProgressConfigSaved     = "config_saved"
-	setupProgressClientInstalled = "client_installed"
-	setupProgressComplete        = "complete"
-	setupProgressError           = "error"
+	setupProgressAuthStarted               = "auth_started"
+	setupProgressAuthCompleted             = "auth_completed"
+	setupProgressConfigSaved               = "config_saved"
+	setupProgressAuditKeyValidationStarted = "audit_key_validation_started"
+	setupProgressAuditKeyValidationFailed  = "audit_key_validation_failed"
+	setupProgressAuditKeyReused            = "audit_key_reused"
+	setupProgressAuditKeyCreationStarted   = "audit_key_creation_started"
+	setupProgressAuditKeyCreated           = "audit_key_created"
+	setupProgressAuditKeyFailed            = "audit_key_failed"
+	setupProgressAuditKeyCompleted         = "audit_key_completed"
+	setupProgressClientInstalled           = "client_installed"
+	setupProgressComplete                  = "complete"
+	setupProgressError                     = "error"
 )
 
 type setupProgressEvent struct {
@@ -344,6 +368,7 @@ type setupProgressEvent struct {
 	Code        string   `json:"code,omitempty"`
 	Message     string   `json:"message,omitempty"`
 	URL         string   `json:"url,omitempty"`
+	APIKeyID    uint     `json:"apiKeyId,omitempty"`
 	ClientID    string   `json:"clientID,omitempty"`
 	DisplayName string   `json:"displayName,omitempty"`
 	Installed   []string `json:"installed,omitempty"`
@@ -380,6 +405,7 @@ const (
 	setupErrorAuthTimeout           setupErrorCode = "auth_timeout"
 	setupErrorAuthCanceled          setupErrorCode = "auth_canceled"
 	setupErrorConfigSaveFailed      setupErrorCode = "config_save_failed"
+	setupErrorAuditCredentialFailed setupErrorCode = "audit_credential_failed"
 	setupErrorClientDetectionFailed setupErrorCode = "client_detection_failed"
 	setupErrorClientInstallFailed   setupErrorCode = "client_install_failed"
 	setupErrorUnknown               setupErrorCode = "unknown"
@@ -461,6 +487,87 @@ func setupAuthErrorCode(err error) setupErrorCode {
 	}
 
 	return setupErrorUnknown
+}
+
+func ensureSetupAuditCredential(ctx context.Context, client *apiclient.Client, appURL string, progress setupProgressWriter) error {
+	return ensureSetupAuditCredentialWithStore(ctx, client, appURL, progress, credentials.NewAuditKeyringStore())
+}
+
+func ensureSetupAuditCredentialWithStore(ctx context.Context, client *apiclient.Client, appURL string, progress setupProgressWriter, store credentials.Store) error {
+	if client == nil {
+		return emitSetupAuditCredentialFailure(progress, appURL, fmt.Errorf("API client is not configured"))
+	}
+	if store == nil {
+		return emitSetupAuditCredentialFailure(progress, appURL, fmt.Errorf("audit credential store is not configured"))
+	}
+
+	if err := progress.emit(setupProgressEvent{Type: setupProgressAuditKeyValidationStarted, URL: appURL}); err != nil {
+		return err
+	}
+	existingKey, err := store.Get(appURL)
+	switch {
+	case err == nil:
+		inspection, inspectErr := client.WithToken(existingKey).InspectAPIKeySelf(ctx)
+		if inspectErr == nil && auditKeyInspectionUsable(inspection, time.Now()) {
+			if err := progress.emit(setupProgressEvent{Type: setupProgressAuditKeyReused, URL: appURL, APIKeyID: inspection.ID}); err != nil {
+				return err
+			}
+			return progress.emit(setupProgressEvent{Type: setupProgressAuditKeyCompleted, URL: appURL, APIKeyID: inspection.ID, Message: "reused"})
+		}
+
+		message := "stored audit API key is invalid, expired, deleted, or lacks audit append access"
+		if inspectErr != nil {
+			message = inspectErr.Error()
+		}
+		if err := progress.emit(setupProgressEvent{Type: setupProgressAuditKeyValidationFailed, URL: appURL, Message: message}); err != nil {
+			return err
+		}
+	case credentials.IsNotFound(err):
+		// TODO(g-linville): this seems like the wrong event type to use here
+		if err := progress.emit(setupProgressEvent{Type: setupProgressAuditKeyValidationFailed, URL: appURL, Message: "no stored audit API key"}); err != nil {
+			return err
+		}
+	default:
+		return emitSetupAuditCredentialFailure(progress, appURL, fmt.Errorf("read audit API key from keyring: %w", err))
+	}
+
+	if err := progress.emit(setupProgressEvent{Type: setupProgressAuditKeyCreationStarted, URL: appURL}); err != nil {
+		return err
+	}
+	created, err := client.CreateAPIKey(ctx, apitypes.APIKeyCreateRequest{
+		Name:               "Local Agent Audit Logs",
+		Description:        "Created by obot setup for local agent tool-call audit log submission.",
+		CanAppendAuditLogs: true,
+	})
+	if err != nil {
+		return emitSetupAuditCredentialFailure(progress, appURL, fmt.Errorf("create audit API key: %w", err))
+	}
+	if strings.TrimSpace(created.Key) == "" {
+		return emitSetupAuditCredentialFailure(progress, appURL, fmt.Errorf("create audit API key: server returned an empty key"))
+	}
+	if err := store.Set(appURL, created.Key); err != nil {
+		return emitSetupAuditCredentialFailure(progress, appURL, fmt.Errorf("store audit API key in keyring: %w", err))
+	}
+	if err := progress.emit(setupProgressEvent{Type: setupProgressAuditKeyCreated, URL: appURL, APIKeyID: created.ID}); err != nil {
+		return err
+	}
+	return progress.emit(setupProgressEvent{Type: setupProgressAuditKeyCompleted, URL: appURL, APIKeyID: created.ID, Message: "created"})
+}
+
+func auditKeyInspectionUsable(inspection *apitypes.APIKeySelfInspectionResponse, now time.Time) bool {
+	if inspection == nil || !inspection.CanAppendAuditLogs {
+		return false
+	}
+	return inspection.ExpiresAt == nil || inspection.ExpiresAt.GetTime().After(now)
+}
+
+func emitSetupAuditCredentialFailure(progress setupProgressWriter, appURL string, err error) error {
+	_ = progress.emit(setupProgressEvent{
+		Type:    setupProgressAuditKeyFailed,
+		URL:     appURL,
+		Message: err.Error(),
+	})
+	return setupErrorf(setupErrorAuditCredentialFailed, "%w", err)
 }
 
 type setupClientSelection struct {

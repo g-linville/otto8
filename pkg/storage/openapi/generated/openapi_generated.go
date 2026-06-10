@@ -18,6 +18,11 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 	return map[string]common.OpenAPIDefinition{
 		"github.com/obot-platform/obot/apiclient/types.APIActivity":                                        schema_obot_platform_obot_apiclient_types_APIActivity(ref),
 		"github.com/obot-platform/obot/apiclient/types.APIActivityList":                                    schema_obot_platform_obot_apiclient_types_APIActivityList(ref),
+		"github.com/obot-platform/obot/apiclient/types.APIKey":                                             schema_obot_platform_obot_apiclient_types_APIKey(ref),
+		"github.com/obot-platform/obot/apiclient/types.APIKeyCreateRequest":                                schema_obot_platform_obot_apiclient_types_APIKeyCreateRequest(ref),
+		"github.com/obot-platform/obot/apiclient/types.APIKeyCreateResponse":                               schema_obot_platform_obot_apiclient_types_APIKeyCreateResponse(ref),
+		"github.com/obot-platform/obot/apiclient/types.APIKeySelfInspectionIdentity":                       schema_obot_platform_obot_apiclient_types_APIKeySelfInspectionIdentity(ref),
+		"github.com/obot-platform/obot/apiclient/types.APIKeySelfInspectionResponse":                       schema_obot_platform_obot_apiclient_types_APIKeySelfInspectionResponse(ref),
 		"github.com/obot-platform/obot/apiclient/types.AccessControlRule":                                  schema_obot_platform_obot_apiclient_types_AccessControlRule(ref),
 		"github.com/obot-platform/obot/apiclient/types.AccessControlRuleList":                              schema_obot_platform_obot_apiclient_types_AccessControlRuleList(ref),
 		"github.com/obot-platform/obot/apiclient/types.AccessControlRuleManifest":                          schema_obot_platform_obot_apiclient_types_AccessControlRuleManifest(ref),
@@ -505,6 +510,248 @@ func schema_obot_platform_obot_apiclient_types_APIActivityList(ref common.Refere
 		},
 		Dependencies: []string{
 			"github.com/obot-platform/obot/apiclient/types.APIActivity"},
+	}
+}
+
+func schema_obot_platform_obot_apiclient_types_APIKey(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "APIKey mirrors pkg/gateway/types.APIKey for the public API-key HTTP contract exposed through the apiclient module.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Default: 0,
+							Type:    []string{"integer"},
+							Format:  "int32",
+						},
+					},
+					"userId": {
+						SchemaProps: spec.SchemaProps{
+							Default: 0,
+							Type:    []string{"integer"},
+							Format:  "int32",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"description": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"canAccessSkills": {
+						SchemaProps: spec.SchemaProps{
+							Default: false,
+							Type:    []string{"boolean"},
+							Format:  "",
+						},
+					},
+					"canAppendAuditLogs": {
+						SchemaProps: spec.SchemaProps{
+							Default: false,
+							Type:    []string{"boolean"},
+							Format:  "",
+						},
+					},
+					"createdAt": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/obot-platform/obot/apiclient/types.Time"),
+						},
+					},
+					"lastUsedAt": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/obot-platform/obot/apiclient/types.Time"),
+						},
+					},
+					"expiresAt": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/obot-platform/obot/apiclient/types.Time"),
+						},
+					},
+					"mcpServerIds": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"id", "userId", "name", "canAccessSkills", "canAppendAuditLogs", "createdAt"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/obot-platform/obot/apiclient/types.Time"},
+	}
+}
+
+func schema_obot_platform_obot_apiclient_types_APIKeyCreateRequest(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "APIKeyCreateRequest mirrors the gateway API-key create request used by pkg/gateway/server.createAPIKey.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"description": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"expiresAt": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/obot-platform/obot/apiclient/types.Time"),
+						},
+					},
+					"mcpServerIds": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"canAccessSkills": {
+						SchemaProps: spec.SchemaProps{
+							Default: false,
+							Type:    []string{"boolean"},
+							Format:  "",
+						},
+					},
+					"canAppendAuditLogs": {
+						SchemaProps: spec.SchemaProps{
+							Default: false,
+							Type:    []string{"boolean"},
+							Format:  "",
+						},
+					},
+				},
+				Required: []string{"name", "canAccessSkills", "canAppendAuditLogs"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/obot-platform/obot/apiclient/types.Time"},
+	}
+}
+
+func schema_obot_platform_obot_apiclient_types_APIKeyCreateResponse(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "APIKeyCreateResponse mirrors pkg/gateway/types.APIKeyCreateResponse for the API-key creation HTTP response.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"APIKey": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/obot-platform/obot/apiclient/types.APIKey"),
+						},
+					},
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+				},
+				Required: []string{"APIKey", "key"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/obot-platform/obot/apiclient/types.APIKey"},
+	}
+}
+
+func schema_obot_platform_obot_apiclient_types_APIKeySelfInspectionIdentity(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "APIKeySelfInspectionIdentity mirrors pkg/gateway/types.APIKeySelfInspectionIdentity.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"subject": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"username": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"displayName": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"email": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_obot_platform_obot_apiclient_types_APIKeySelfInspectionResponse(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "APIKeySelfInspectionResponse mirrors pkg/gateway/types.APIKeySelfInspectionResponse.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"APIKey": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/obot-platform/obot/apiclient/types.APIKey"),
+						},
+					},
+					"identity": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/obot-platform/obot/apiclient/types.APIKeySelfInspectionIdentity"),
+						},
+					},
+				},
+				Required: []string{"APIKey", "identity"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/obot-platform/obot/apiclient/types.APIKey", "github.com/obot-platform/obot/apiclient/types.APIKeySelfInspectionIdentity"},
 	}
 }
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/adrg/xdg"
+	"github.com/obot-platform/obot/apiclient"
 	"github.com/obot-platform/obot/pkg/cli/internal/localconfig"
 )
 
@@ -125,12 +127,16 @@ func useRootTestEnv(t *testing.T) func() {
 	oldConfigHome, hadConfigHome := os.LookupEnv("XDG_CONFIG_HOME")
 	oldBaseURL, hadBaseURL := os.LookupEnv("OBOT_BASE_URL")
 	oldToken, hadToken := os.LookupEnv("OBOT_TOKEN")
+	oldAuditCredentialFlow := runSetupAuditCredentialFlow
 
 	if err := os.Setenv("XDG_CONFIG_HOME", configHome); err != nil {
 		t.Fatal(err)
 	}
 	_ = os.Unsetenv("OBOT_BASE_URL")
 	_ = os.Unsetenv("OBOT_TOKEN")
+	runSetupAuditCredentialFlow = func(context.Context, *apiclient.Client, string, setupProgressWriter) error {
+		return nil
+	}
 	xdg.Reload()
 
 	return func() {
@@ -149,6 +155,7 @@ func useRootTestEnv(t *testing.T) func() {
 		} else {
 			_ = os.Unsetenv("OBOT_TOKEN")
 		}
+		runSetupAuditCredentialFlow = oldAuditCredentialFlow
 		xdg.Reload()
 	}
 }
