@@ -39,6 +39,13 @@
 		}
 		return true;
 	}
+
+	function clientDisplay(client: AuditLog['client']) {
+		if (!client) return '';
+		const version = client.version?.trim();
+		if (!version || version.toLowerCase() === 'unknown') return client.name;
+		return `${client.name}/${version}`;
+	}
 </script>
 
 <div class="bg-base-200 text-base-content flex h-full w-[inherit] min-w-[inherit] flex-col">
@@ -137,8 +144,7 @@
 				{/if}
 				{#if auditLog.client}
 					<p>
-						<span class="font-medium">Client</span>: {auditLog.client.name}/{auditLog.client
-							.version}
+						<span class="font-medium">Client</span>: {clientDisplay(auditLog.client)}
 					</p>
 				{/if}
 				{#if auditLog.clientIP}
