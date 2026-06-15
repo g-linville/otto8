@@ -26,6 +26,7 @@
 	import FiltersDrawer from '../filters-drawer/FiltersDrawer.svelte';
 	import AuditLogCalendar from './AuditLogCalendar.svelte';
 	import AuditLogsTable from './AuditLogs.svelte';
+	import { auditLogEventLabel, auditLogOutcomeLabel, auditLogSourceLabel } from './labels';
 	import { aggregateAuditLogsByBucket, type AuditLogTimelineBucketRow } from './timelineUtils';
 	import { set, endOfDay, isBefore, subDays } from 'date-fns';
 	import { debounce } from 'es-toolkit';
@@ -110,7 +111,13 @@
 	);
 
 	/** Timeline accepts raw logs or bucketed rows; use a shape that includes optional value keys for StackedTimeline. */
-	type TimelineChartRow = { createdAt: string; callType: string; count?: number; _secondary?: 0 };
+	type TimelineChartRow = {
+		createdAt: string;
+		eventType?: string;
+		callType: string;
+		count?: number;
+		_secondary?: 0;
+	};
 
 	const isReachedMax = $derived(pageIndex >= numberOfPages - 1);
 	const isReachedMin = $derived(pageIndex <= 0);
@@ -148,15 +155,17 @@
 		'client_name',
 		'client_version',
 		'client_ip',
+		'device_id',
+		'event_type',
+		'outcome',
 		'response_status',
 		'session_id',
+		'source_type',
 		'start_time',
 		'end_time'
 	];
 
-	const defaultSearchParams: Partial<AuditLogURLFilters> = {
-		call_type: ['resources/read', 'tools/call', 'prompts/get'].join(',')
-	};
+	const defaultSearchParams: Partial<AuditLogURLFilters> = {};
 
 	const searchParamsAsArray: [SupportedFilter, string | undefined | null][] = $derived(
 		supportedFilters.map((d) => {
@@ -391,6 +400,10 @@
 		if (_key === 'session_id') return 'Session ID';
 		if (_key === 'response_status') return 'Response Status';
 		if (_key === 'client_ip') return 'Client IP';
+		if (_key === 'source_type') return 'Source';
+		if (_key === 'event_type') return 'Event';
+		if (_key === 'device_id') return 'Device ID';
+		if (_key === 'outcome') return 'Outcome';
 
 		return key.replace(/_(\w)/g, ' $1');
 	}
@@ -425,6 +438,18 @@
 
 		if (label === 'user_id') {
 			return getUserDisplayName(users, value + '');
+		}
+
+		if (label === 'source_type') {
+			return auditLogSourceLabel(value + '');
+		}
+
+		if (label === 'event_type') {
+			return auditLogEventLabel(value + '');
+		}
+
+		if (label === 'outcome') {
+			return auditLogOutcomeLabel(value + '');
 		}
 
 		return value + '';
@@ -637,7 +662,7 @@
 						start={timeRangeFilters.startTime}
 						end={timeRangeFilters.endTime}
 						data={displayTimelineData as TimelineChartRow[]}
-						categoryKey="callType"
+						categoryKey="eventType"
 						dateKey="createdAt"
 						primaryValueKey={isTimelineAggregated ? 'count' : undefined}
 						secondaryValueKey={isTimelineAggregated ? '_secondary' : undefined}
@@ -753,6 +778,7 @@
 				!propsFiltersKeys.has(filterId) && !enforcedFiltersKeys.has(filterId)}
 			getUserDisplayName={(...args) => getUserDisplayName(users, ...args)}
 			{getFilterDisplayLabel}
+			getFilterDisplayValue={(key, value) => getFilterValue(key, value)}
 			getDefaultValue={(filter) => defaultSearchParams[filter]}
 			endpoint={async (filterId: string, opts = {}) => {
 				const timeFilters = {

@@ -109,32 +109,40 @@ export interface AuditLogExport {
 	filters: AuditLogExportFilterResponse;
 }
 export interface AuditLogExportFilterResponse {
-	userIDs?: string[];
-	mcpIDs?: string[];
-	mcpServerDisplayNames?: string[];
-	mcpServerCatalogEntryNames?: string[];
-	callTypes?: string[];
 	callIdentifiers?: string[];
-	responseStatuses?: string[];
-	sessionIDs?: string[];
+	callTypes?: string[];
+	clientIPs?: string[];
 	clientNames?: string[];
 	clientVersions?: string[];
-	clientIPs?: string[];
+	deviceIDs?: string[];
+	eventTypes?: string[];
+	mcpIDs?: string[];
+	mcpServerCatalogEntryNames?: string[];
+	mcpServerDisplayNames?: string[];
+	outcomes?: string[];
 	query?: string;
+	responseStatuses?: string[];
+	sessionIDs?: string[];
+	sourceTypes?: string[];
+	userIDs?: string[];
 }
 export type AuditLogExportFilters = {
-	userIDs?: string[];
-	mcpIDs?: string[];
-	mcpServerDisplayNames?: string[];
-	mcpServerCatalogEntryNames?: string[];
-	callTypes?: string[];
 	callIdentifiers?: string[];
-	responseStatuses?: string[];
-	sessionIDs?: string[];
+	callTypes?: string[];
+	clientIPs?: string[];
 	clientNames?: string[];
 	clientVersions?: string[];
-	clientIPs?: string[];
+	deviceIDs?: string[];
+	eventTypes?: string[];
+	mcpIDs?: string[];
+	mcpServerCatalogEntryNames?: string[];
+	mcpServerDisplayNames?: string[];
+	outcomes?: string[];
 	query?: string;
+	responseStatuses?: string[];
+	sessionIDs?: string[];
+	sourceTypes?: string[];
+	userIDs?: string[];
 };
 export interface ScheduledAuditLogExportInput {
 	name: string;

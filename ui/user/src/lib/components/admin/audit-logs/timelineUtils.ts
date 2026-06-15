@@ -87,13 +87,14 @@ function getBucketStart(date: Date, kind: BucketKind): Date {
 /** One row per bucket per category for StackedTimeline with primaryValueKey="count", secondaryValueKey="_secondary". */
 export type AuditLogTimelineBucketRow = {
 	createdAt: string;
+	eventType: string;
 	callType: string;
 	count: number;
 	_secondary: 0;
 };
 
 export function aggregateAuditLogsByBucket(
-	logs: { createdAt: string; callType: string }[],
+	logs: { createdAt: string; eventType?: string; callType: string }[],
 	rangeStart: Date,
 	rangeEnd: Date
 ): AuditLogTimelineBucketRow[] {
@@ -107,15 +108,16 @@ export function aggregateAuditLogsByBucket(
 			byCat = new Map();
 			bucketToCategoryToCount.set(bucketKey, byCat);
 		}
-		const cat = row.callType || 'unknown';
+		const cat = row.eventType || row.callType || 'unknown';
 		byCat.set(cat, (byCat.get(cat) ?? 0) + 1);
 	}
 	const result: AuditLogTimelineBucketRow[] = [];
 	for (const [bucketKey, byCat] of bucketToCategoryToCount) {
-		for (const [callType, count] of byCat) {
+		for (const [eventType, count] of byCat) {
 			result.push({
 				createdAt: bucketKey,
-				callType,
+				eventType,
+				callType: eventType,
 				count,
 				_secondary: 0
 			});
@@ -124,7 +126,7 @@ export function aggregateAuditLogsByBucket(
 
 	result.sort((a, b) => {
 		if (a.createdAt === b.createdAt) {
-			return a.callType.localeCompare(b.callType);
+			return a.eventType.localeCompare(b.eventType);
 		}
 		return a.createdAt.localeCompare(b.createdAt);
 	});

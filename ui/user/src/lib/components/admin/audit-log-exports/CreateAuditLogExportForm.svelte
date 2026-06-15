@@ -3,6 +3,11 @@
 	import type { DateRange } from '$lib/components/Calendar.svelte';
 	import Select from '$lib/components/Select.svelte';
 	import AuditLogCalendar from '$lib/components/admin/audit-logs/AuditLogCalendar.svelte';
+	import {
+		auditLogEventLabel,
+		auditLogOutcomeLabel,
+		auditLogSourceLabel
+	} from '$lib/components/admin/audit-logs/labels';
 	import Loading from '$lib/icons/Loading.svelte';
 	import {
 		AdminService,
@@ -30,8 +35,12 @@
 		| 'client_name'
 		| 'client_version'
 		| 'client_ip'
+		| 'device_id'
+		| 'event_type'
+		| 'outcome'
 		| 'response_status'
-		| 'session_id';
+		| 'session_id'
+		| 'source_type';
 
 	type AuditLogExportFilterFieldConfig = {
 		filterKey: AuditLogExportMultiSelectFilterKey;
@@ -68,6 +77,18 @@
 			placeholder: 'tools/call,resources/read'
 		},
 		{
+			filterKey: 'source_type',
+			title: 'Sources',
+			description: 'List of audit log sources',
+			placeholder: 'mcp,local_agent'
+		},
+		{
+			filterKey: 'event_type',
+			title: 'Event Types',
+			description: 'List of event types',
+			placeholder: 'tool_call,resource_read'
+		},
+		{
 			filterKey: 'client_name',
 			title: 'Client Names',
 			description: 'List of client names',
@@ -84,6 +105,18 @@
 			title: 'Session IDs',
 			description: 'List of session IDs',
 			placeholder: 'session1,session2'
+		},
+		{
+			filterKey: 'device_id',
+			title: 'Device IDs',
+			description: 'List of device IDs',
+			placeholder: 'device1,device2'
+		},
+		{
+			filterKey: 'outcome',
+			title: 'Outcomes',
+			description: 'List of outcomes',
+			placeholder: 'success,error'
 		},
 		{
 			filterKey: 'client_ip',
@@ -142,8 +175,12 @@
 			client_name: '',
 			client_version: '',
 			client_ip: '',
+			device_id: '',
+			event_type: '',
+			outcome: '',
 			response_status: '',
 			session_id: '',
+			source_type: '',
 			query: ''
 		} as Partial<AuditLogURLFilters>
 	});
@@ -161,7 +198,11 @@
 		'client_version',
 		'client_ip',
 		'call_type',
+		'device_id',
+		'event_type',
+		'outcome',
 		'session_id',
+		'source_type',
 		'response_status'
 	];
 
@@ -188,7 +229,12 @@
 					session_id: join(initialData.filters.sessionIDs),
 					client_name: join(initialData.filters.clientNames),
 					client_version: join(initialData.filters.clientVersions),
-					client_ip: join(initialData.filters.clientIPs)
+					client_ip: join(initialData.filters.clientIPs),
+					device_id: join(initialData.filters.deviceIDs),
+					event_type: join(initialData.filters.eventTypes),
+					outcome: join(initialData.filters.outcomes),
+					source_type: join(initialData.filters.sourceTypes),
+					query: initialData.filters.query ?? ''
 				};
 				showAdvancedOptions = true;
 			}
@@ -217,8 +263,13 @@
 				'client_name',
 				'client_version',
 				'client_ip',
+				'device_id',
+				'event_type',
+				'outcome',
 				'response_status',
-				'session_id'
+				'session_id',
+				'source_type',
+				'query'
 			];
 
 			let hasFilters = false;
@@ -292,7 +343,12 @@
 					sessionIDs: split(form.filters.session_id),
 					clientNames: split(form.filters.client_name),
 					clientVersions: split(form.filters.client_version),
-					clientIPs: split(form.filters.client_ip)
+					clientIPs: split(form.filters.client_ip),
+					deviceIDs: split(form.filters.device_id),
+					eventTypes: split(form.filters.event_type),
+					outcomes: split(form.filters.outcome),
+					sourceTypes: split(form.filters.source_type),
+					query: form.filters.query || ''
 				}
 			};
 
@@ -322,6 +378,15 @@
 		if (!opts?.map) return [];
 		if (field.useUserDisplayNames) {
 			return opts.map((d) => ({ id: d, label: usersMap.get(d)?.displayName ?? d }));
+		}
+		if (field.filterKey === 'source_type') {
+			return opts.map((d) => ({ id: d, label: auditLogSourceLabel(d) }));
+		}
+		if (field.filterKey === 'event_type') {
+			return opts.map((d) => ({ id: d, label: auditLogEventLabel(d) }));
+		}
+		if (field.filterKey === 'outcome') {
+			return opts.map((d) => ({ id: d, label: auditLogOutcomeLabel(d) }));
 		}
 		return opts.map((d) => ({ id: d, label: d }));
 	}

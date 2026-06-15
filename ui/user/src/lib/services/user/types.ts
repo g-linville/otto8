@@ -96,44 +96,69 @@ export type AuditLogClient = {
 	version: string;
 };
 export interface AuditLog {
-	id: string;
-	createdAt: string;
 	apiKey?: string;
-	userID: string;
-	userAgent?: string;
-	mcpServerInstanceName: string;
-	mcpServerName: string;
-	mcpServerDisplayName: string;
-	mcpServerCatalogEntryName?: string;
-	mcpID?: string;
-	powerUserWorkspaceID?: string;
-	client: AuditLogClient;
-	clientIP: string;
 	callType: string;
 	callIdentifier?: string;
-	responseStatus: number;
-	processingTimeMs: number;
-	requestHeaders?: Record<string, string | string[]>;
-	requestMutated: boolean;
-	requestBody?: unknown;
+	client: AuditLogClient;
+	clientIP: string;
+	context?: AuditLogContext;
+	createdAt: string;
+	deviceID?: string;
+	error?: string;
+	errorDetail?: string;
+	eventID?: string;
+	eventType?: string;
+	id: string;
+	mcpID?: string;
+	mcpServerCatalogEntryName?: string;
+	mcpServerDisplayName: string;
+	mcpServerInstanceName: string;
+	mcpServerName: string;
 	mutatedRequestBody?: unknown;
+	originalResponseBody?: unknown;
+	outcome?: string;
+	payloadMeta?: Record<string, PayloadFieldMeta>;
+	powerUserWorkspaceID?: string;
+	processingTimeMs: number;
+	rawEvent?: unknown;
+	receivedAt?: string;
+	requestBody?: unknown;
+	requestHeaders?: Record<string, string | string[]>;
+	requestID?: string;
+	requestMutated: boolean;
+	responseBody?: unknown;
 	responseHeaders?: Record<string, string | string[]>;
 	responseMutated: boolean;
-	responseBody?: unknown;
-	originalResponseBody?: unknown;
+	responseStatus: number;
+	sessionID?: string;
+	sourceType?: string;
+	userAgent?: string;
+	userID: string;
 	webhookStatuses?: {
-		type?: string;
+		message?: string;
 		method?: string;
 		name?: string;
-		tool?: string;
-		url?: string;
 		status?: string;
-		message?: string;
+		tool?: string;
+		type?: string;
+		url?: string;
 	}[];
-	error?: string;
-	sessionID?: string;
-	requestID?: string;
 }
+export interface AuditLogContext {
+	arch?: string;
+	clientEventID?: string;
+	conversationID?: string;
+	cwd?: string;
+	gitBranch?: string;
+	gitRemote?: string;
+	hostname?: string;
+	os?: string;
+	sourceHookEvent?: string;
+	username?: string;
+	workspace?: string;
+}
+export type AuditLogEventType = 'tool_call' | 'resource_read' | 'prompt_get' | 'mcp_request';
+export type AuditLogOutcome = 'success' | 'error';
 export interface AuditLogToolCallStatItem {
 	createdAt: string;
 	userID: string;
@@ -171,22 +196,26 @@ export interface AuditLogUsageStats {
 	uniqueUsers: number;
 }
 export type AuditLogURLFilters = {
-	user_id?: string | null;
+	call_identifier?: string | null;
+	call_type?: string | null; // tools/call, resources/read, prompts/get
+	client_name?: string | null;
+	client_ip?: string | null;
+	client_version?: string | null;
+	device_id?: string | null;
+	end_time?: string | null;
+	event_type?: string | null;
+	limit?: number | null;
+	mcp_id?: string | null;
 	mcp_server_catalog_entry_name?: string | null;
 	mcp_server_display_name?: string | null;
-	mcp_id?: string | null;
-	call_identifier?: string | null;
-	client_name?: string | null;
-	client_version?: string | null;
-	client_ip?: string | null;
-	call_type?: string | null; // tools/call, resources/read, prompts/get
-	session_id?: string | null;
-	start_time?: string | null; // RFC3339 format (e.g., "2024-01-01T00:00:00Z"
-	end_time?: string | null;
-	limit?: number | null;
 	offset?: number | null;
+	outcome?: string | null;
 	query?: string | null;
 	response_status?: string | null;
+	session_id?: string | null;
+	source_type?: string | null;
+	start_time?: string | null; // RFC3339 format (e.g., "2024-01-01T00:00:00Z"
+	user_id?: string | null;
 };
 export type AuditLogFilters = {
 	userId?: string | null;
@@ -222,6 +251,11 @@ export type UsageStatsFilters = {
 	start_time?: string | null;
 	end_time?: string | null;
 };
+export interface PayloadFieldMeta {
+	originalBytes?: number;
+	storedBytes?: number;
+	truncated?: boolean;
+}
 
 // Bootstrap
 

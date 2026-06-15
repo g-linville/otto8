@@ -29,6 +29,7 @@
 		onClose: () => void;
 		getUserDisplayName: (userId: string, hasConflict?: () => boolean) => string;
 		getFilterDisplayLabel?: (key: string) => string;
+		getFilterDisplayValue?: (key: keyof AuditLogURLFilters, value: string) => string;
 		getDefaultValue?: <T extends keyof AuditLogURLFilters>(filter: T) => AuditLogURLFilters[T];
 		endpoint?: FilterOptionsEndpoint;
 	}
@@ -40,6 +41,7 @@
 		onClose,
 		getUserDisplayName,
 		getFilterDisplayLabel,
+		getFilterDisplayValue,
 		getDefaultValue,
 		filterOptions,
 		endpoint = UserService.listAuditLogFilterOptions
@@ -114,7 +116,7 @@
 					?.filter((d) => filterOptions?.(d, filterId) ?? true)
 					?.map((d) => ({
 						id: d,
-						label: d
+						label: getFilterDisplayValue?.(filterId, d) ?? d
 					})) ?? []
 			);
 		};

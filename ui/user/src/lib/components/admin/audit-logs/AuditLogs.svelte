@@ -3,6 +3,12 @@
 	import { mcpServersAndEntries, userDeviceSettings } from '$lib/stores';
 	import { formatLogTimestamp } from '$lib/time';
 	import { throttle } from '$lib/utils';
+	import {
+		auditLogEventLabel,
+		auditLogOutcomeLabel,
+		auditLogSourceLabel,
+		isLocalAgentAuditLog
+	} from './labels';
 	import { GripVertical } from 'lucide-svelte';
 	import { tick } from 'svelte';
 	import { twMerge } from 'tailwind-merge';
@@ -124,11 +130,11 @@
 	</th>
 {/snippet}
 
-{#snippet td(content: string)}
+{#snippet td(content: unknown)}
 	<td class="text-sm whitespace-nowrap">
 		<div class="box-content flex h-full px-6">
 			<div class="flex-1 truncate py-4">
-				{content}
+				{content === undefined || content === null || content === '' ? '--' : content}
 			</div>
 			{@render tdResizeHandler()}
 		</div>
@@ -179,19 +185,25 @@
 
 						{@render th('Timestamp', { class: 'w-[34ch]', minWidth: '34ch' })}
 
+						{@render th('Source', { class: 'w-[20ch]', minWidth: '20ch' })}
+
 						{@render th('User', { class: 'w-[30ch]', minWidth: '30ch' })}
 
-						{@render th('Server', { class: 'w-[24ch]', minWidth: '24ch' })}
+						{@render th('Target', { class: 'w-[28ch]', minWidth: '28ch' })}
 
-						{@render th('Type', { class: 'w-[30ch]', minWidth: '30ch' })}
+						{@render th('Event', { class: 'w-[24ch]', minWidth: '24ch' })}
 
 						{@render th('Identifier', { class: 'w-[24ch]', minWidth: '24ch' })}
 
+						{@render th('Outcome', { class: 'w-[18ch]', minWidth: '18ch' })}
+
+						{@render th('Duration (ms)', { class: 'w-[22ch]', minWidth: '22ch' })}
+
 						{@render th('Response Code', { class: 'w-[22ch]', minWidth: '22ch' })}
 
-						{@render th('Response Time (ms)', { class: 'w-[26ch]', minWidth: '26ch' })}
-
 						{@render th('Mutated', { class: 'w-[16ch]', minWidth: '16ch' })}
+
+						{@render th('Device', { class: 'w-[24ch]', minWidth: '24ch' })}
 
 						{@render th('Client', { class: 'w-[19ch]', minWidth: '19ch' })}
 
@@ -215,17 +227,22 @@
 							{item.index + 1}
 						</td>
 						{@render td(formatLogTimestamp(d.createdAt, userDeviceSettings.timeFormat))}
+						{@render td(auditLogSourceLabel(d.sourceType))}
 						{@render td(getUserDisplayName(d.userID))}
 						{@render td(
-							d.mcpID
-								? serverAliases.get(d.mcpID) || d.mcpServerDisplayName
-								: d.mcpServerDisplayName
+							isLocalAgentAuditLog(d)
+								? d.context?.workspace || d.context?.cwd || d.deviceID
+								: d.mcpID
+									? serverAliases.get(d.mcpID) || d.mcpServerDisplayName
+									: d.mcpServerDisplayName
 						)}
-						{@render td(d.callType)}
+						{@render td(auditLogEventLabel(d.eventType) || d.callType)}
 						{@render td(d.callIdentifier)}
-						{@render td(d.responseStatus)}
+						{@render td(auditLogOutcomeLabel(d.outcome, d.responseStatus))}
 						{@render td(d.processingTimeMs)}
+						{@render td(d.responseStatus)}
 						{@render mutationIndicators(d.requestMutated, d.responseMutated)}
+						{@render td(d.deviceID)}
 						{@render td(d.client?.name)}
 						{@render td(d.clientIP)}
 					</tr>

@@ -1,6 +1,11 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import Select from '$lib/components/Select.svelte';
+	import {
+		auditLogEventLabel,
+		auditLogOutcomeLabel,
+		auditLogSourceLabel
+	} from '$lib/components/admin/audit-logs/labels';
 	import Loading from '$lib/icons/Loading.svelte';
 	import {
 		type OrgUser,
@@ -55,8 +60,12 @@
 			client_name: '',
 			client_version: '',
 			client_ip: '',
+			device_id: '',
+			event_type: '',
+			outcome: '',
 			response_status: '',
 			session_id: '',
+			source_type: '',
 			query: ''
 		} as Partial<AuditLogURLFilters>
 	});
@@ -116,7 +125,16 @@
 					client_version: initialData.filters.clientVersions
 						? initialData.filters.clientVersions.join(',')
 						: '',
-					client_ip: initialData.filters.clientIPs ? initialData.filters.clientIPs.join(',') : ''
+					client_ip: initialData.filters.clientIPs ? initialData.filters.clientIPs.join(',') : '',
+					device_id: initialData.filters.deviceIDs ? initialData.filters.deviceIDs.join(',') : '',
+					event_type: initialData.filters.eventTypes
+						? initialData.filters.eventTypes.join(',')
+						: '',
+					outcome: initialData.filters.outcomes ? initialData.filters.outcomes.join(',') : '',
+					source_type: initialData.filters.sourceTypes
+						? initialData.filters.sourceTypes.join(',')
+						: '',
+					query: initialData.filters.query ?? ''
 				};
 				showAdvancedOptions = true;
 			}
@@ -125,17 +143,38 @@
 			const params = page.url.searchParams;
 
 			const mappedField = {
+				// TODO(g-linville): why did we add a singular form to all of these?
+				user_id: 'user_id',
 				user_ids: 'user_id',
+				mcp_id: 'mcp_id',
 				mcp_ids: 'mcp_id',
+				mcp_server_display_name: 'mcp_server_display_name',
 				mcp_server_display_names: 'mcp_server_display_name',
+				mcp_server_catalog_entry_name: 'mcp_server_catalog_entry_name',
 				mcp_server_catalog_entry_names: 'mcp_server_catalog_entry_name',
+				call_type: 'call_type',
 				call_types: 'call_type',
+				call_identifier: 'call_identifier',
 				call_identifiers: 'call_identifier',
+				response_status: 'response_status',
 				response_statuses: 'response_status',
+				session_id: 'session_id',
 				session_ids: 'session_id',
+				client_name: 'client_name',
 				client_names: 'client_name',
+				client_version: 'client_version',
 				client_versions: 'client_version',
-				client_ips: 'client_ip'
+				client_ip: 'client_ip',
+				client_ips: 'client_ip',
+				device_id: 'device_id',
+				device_ids: 'device_id',
+				event_type: 'event_type',
+				event_types: 'event_type',
+				outcome: 'outcome',
+				outcomes: 'outcome',
+				source_type: 'source_type',
+				source_types: 'source_type',
+				query: 'query'
 			} satisfies Record<string, keyof AuditLogURLFilters>;
 
 			let hasFilters = false;
@@ -163,7 +202,11 @@
 		'client_version',
 		'client_ip',
 		'call_type',
+		'device_id',
+		'event_type',
+		'outcome',
 		'session_id',
+		'source_type',
 		'response_status'
 	];
 
@@ -194,10 +237,14 @@
 			| 'mcp_server_display_name'
 			| 'call_type'
 			| 'client_name'
+			| 'device_id'
+			| 'event_type'
+			| 'outcome'
 			| 'response_status'
 			| 'session_id'
 			| 'client_ip'
-			| 'mcp_server_catalog_entry_name';
+			| 'mcp_server_catalog_entry_name'
+			| 'source_type';
 		label: string;
 		description: string;
 		options: { id: string; label: string }[];
@@ -239,6 +286,24 @@
 				options: filtersOptions['call_type']?.map?.(sameLabel) ?? []
 			},
 			{
+				fieldId: 'source_type',
+				filterKey: 'source_type',
+				label: 'Sources',
+				description: 'Comma-separated source types',
+				options:
+					filtersOptions['source_type']?.map?.((d) => ({ id: d, label: auditLogSourceLabel(d) })) ??
+					[]
+			},
+			{
+				fieldId: 'event_type',
+				filterKey: 'event_type',
+				label: 'Event Types',
+				description: 'Comma-separated event types',
+				options:
+					filtersOptions['event_type']?.map?.((d) => ({ id: d, label: auditLogEventLabel(d) })) ??
+					[]
+			},
+			{
 				fieldId: 'client_name',
 				filterKey: 'client_name',
 				label: 'Client Names',
@@ -258,6 +323,21 @@
 				label: 'Session IDs',
 				description: 'Comma-separated session IDs',
 				options: filtersOptions['session_id']?.map?.(sameLabel) ?? []
+			},
+			{
+				fieldId: 'device_id',
+				filterKey: 'device_id',
+				label: 'Device IDs',
+				description: 'Comma-separated device IDs',
+				options: filtersOptions['device_id']?.map?.(sameLabel) ?? []
+			},
+			{
+				fieldId: 'outcome',
+				filterKey: 'outcome',
+				label: 'Outcomes',
+				description: 'Comma-separated outcomes',
+				options:
+					filtersOptions['outcome']?.map?.((d) => ({ id: d, label: auditLogOutcomeLabel(d) })) ?? []
 			},
 			{
 				fieldId: 'client_ip',
@@ -326,7 +406,20 @@
 						: [],
 					clientIPs: form.filters.client_ip
 						? form.filters.client_ip.split(',').map((s) => s.trim())
-						: []
+						: [],
+					deviceIDs: form.filters.device_id
+						? form.filters.device_id.split(',').map((s) => s.trim())
+						: [],
+					eventTypes: form.filters.event_type
+						? form.filters.event_type.split(',').map((s) => s.trim())
+						: [],
+					outcomes: form.filters.outcome
+						? form.filters.outcome.split(',').map((s) => s.trim())
+						: [],
+					sourceTypes: form.filters.source_type
+						? form.filters.source_type.split(',').map((s) => s.trim())
+						: [],
+					query: form.filters.query || ''
 				}
 			};
 
