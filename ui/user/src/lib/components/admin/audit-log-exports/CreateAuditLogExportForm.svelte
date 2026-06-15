@@ -253,30 +253,30 @@
 			}
 
 			// Set filters if provided
-			const filterKeys = [
-				'user_id',
-				'mcp_id',
-				'mcp_server_display_name',
-				'mcp_server_catalog_entry_name',
-				'call_type',
-				'call_identifier',
-				'client_name',
-				'client_version',
-				'client_ip',
-				'device_id',
-				'event_type',
-				'outcome',
-				'response_status',
-				'session_id',
-				'source_type',
-				'query'
-			];
+			const mappedField = {
+				user_ids: 'user_id',
+				mcp_ids: 'mcp_id',
+				mcp_server_display_names: 'mcp_server_display_name',
+				mcp_server_catalog_entry_names: 'mcp_server_catalog_entry_name',
+				call_types: 'call_type',
+				call_identifiers: 'call_identifier',
+				response_statuses: 'response_status',
+				session_ids: 'session_id',
+				client_names: 'client_name',
+				client_versions: 'client_version',
+				client_ips: 'client_ip',
+				device_ids: 'device_id',
+				event_types: 'event_type',
+				outcomes: 'outcome',
+				source_types: 'source_type',
+				query: 'query'
+			} satisfies Record<string, keyof AuditLogURLFilters>;
 
 			let hasFilters = false;
-			filterKeys.forEach((key) => {
+			Object.entries(mappedField).forEach(([key, filterKey]) => {
 				const value = params.get(key);
-				if (value && key in form.filters) {
-					(form.filters as Record<string, string>)[key] = value;
+				if (value) {
+					form.filters[filterKey] = value;
 					hasFilters = true;
 				}
 			});

@@ -143,36 +143,20 @@
 			const params = page.url.searchParams;
 
 			const mappedField = {
-				// TODO(g-linville): why did we add a singular form to all of these?
-				user_id: 'user_id',
 				user_ids: 'user_id',
-				mcp_id: 'mcp_id',
 				mcp_ids: 'mcp_id',
-				mcp_server_display_name: 'mcp_server_display_name',
 				mcp_server_display_names: 'mcp_server_display_name',
-				mcp_server_catalog_entry_name: 'mcp_server_catalog_entry_name',
 				mcp_server_catalog_entry_names: 'mcp_server_catalog_entry_name',
-				call_type: 'call_type',
 				call_types: 'call_type',
-				call_identifier: 'call_identifier',
 				call_identifiers: 'call_identifier',
-				response_status: 'response_status',
 				response_statuses: 'response_status',
-				session_id: 'session_id',
 				session_ids: 'session_id',
-				client_name: 'client_name',
 				client_names: 'client_name',
-				client_version: 'client_version',
 				client_versions: 'client_version',
-				client_ip: 'client_ip',
 				client_ips: 'client_ip',
-				device_id: 'device_id',
 				device_ids: 'device_id',
-				event_type: 'event_type',
 				event_types: 'event_type',
-				outcome: 'outcome',
 				outcomes: 'outcome',
-				source_type: 'source_type',
 				source_types: 'source_type',
 				query: 'query'
 			} satisfies Record<string, keyof AuditLogURLFilters>;

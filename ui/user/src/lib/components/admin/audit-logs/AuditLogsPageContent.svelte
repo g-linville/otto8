@@ -479,6 +479,43 @@
 		pageIndexLocal.current = 0;
 	}
 
+	function auditLogFilterToExportParam(key: string) {
+		const map: Partial<Record<keyof AuditLogURLFilters, string>> = {
+			call_identifier: 'call_identifiers',
+			call_type: 'call_types',
+			client_ip: 'client_ips',
+			client_name: 'client_names',
+			client_version: 'client_versions',
+			device_id: 'device_ids',
+			event_type: 'event_types',
+			mcp_id: 'mcp_ids',
+			mcp_server_catalog_entry_name: 'mcp_server_catalog_entry_names',
+			mcp_server_display_name: 'mcp_server_display_names',
+			outcome: 'outcomes',
+			response_status: 'response_statuses',
+			session_id: 'session_ids',
+			source_type: 'source_types',
+			user_id: 'user_ids'
+		};
+
+		return map[key as keyof AuditLogURLFilters] ?? key;
+	}
+
+	function addExportFiltersToURL(url: URL) {
+		url.searchParams.set('startTime', timeRangeFilters.startTime.toISOString());
+		url.searchParams.set('endTime', timeRangeFilters.endTime.toISOString());
+
+		Object.entries(pillsSearchParamFilters).forEach(([key, value]) => {
+			if (key !== 'start_time' && key !== 'end_time' && value) {
+				url.searchParams.set(auditLogFilterToExportParam(key), value.toString());
+			}
+		});
+
+		if (query) {
+			url.searchParams.set('query', query);
+		}
+	}
+
 	async function handleExportRequest(formType: 'export' | 'scheduled') {
 		// Check if there are any active filters
 		const hasActiveFilters = Object.keys(pillsSearchParamFilters).length > 0 || query;
@@ -503,21 +540,7 @@
 			url.searchParams.set('form', formType);
 
 			if (includeFilters) {
-				// Add current time range
-				url.searchParams.set('startTime', timeRangeFilters.startTime.toISOString());
-				url.searchParams.set('endTime', timeRangeFilters.endTime.toISOString());
-
-				// Add current filters (excluding time filters as they're handled separately)
-				Object.entries(pillsSearchParamFilters).forEach(([key, value]) => {
-					if (key !== 'start_time' && key !== 'end_time' && value) {
-						url.searchParams.set(key, value.toString());
-					}
-				});
-
-				// Add query if present
-				if (query) {
-					url.searchParams.set('query', query);
-				}
+				addExportFiltersToURL(url);
 			}
 
 			if (response.provider) {
@@ -535,16 +558,7 @@
 
 			if (includeFilters) {
 				// Still add filters for when storage config is completed
-				url.searchParams.set('startTime', timeRangeFilters.startTime.toISOString());
-				url.searchParams.set('endTime', timeRangeFilters.endTime.toISOString());
-				Object.entries(pillsSearchParamFilters).forEach(([key, value]) => {
-					if (key !== 'start_time' && key !== 'end_time' && value) {
-						url.searchParams.set(key, value.toString());
-					}
-				});
-				if (query) {
-					url.searchParams.set('query', query);
-				}
+				addExportFiltersToURL(url);
 			}
 
 			goto(url.pathname + url.search);
