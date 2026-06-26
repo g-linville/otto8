@@ -195,10 +195,10 @@ func TestCreateLocalAgentToolCallAuditLogsRejectsMissingRequiredFields(t *testin
 func TestCreateLocalAgentToolCallAuditLogsRejectsNonTerminalStatus(t *testing.T) {
 	c := newTestClient(t)
 	entry := testLocalAgentAuditLog("entry-1", types2.LocalAgentAuditLogStatusSucceeded, time.Now().UTC())
-	entry.LocalAgentToolCallFields.Status = string(types2.LocalAgentAuditLogPhasePreTool)
+	entry.LocalAgentToolCallFields.Status = "started"
 
 	if err := c.CreateLocalAgentToolCallAuditLogs(t.Context(), []types.MCPAuditLog{entry}); err == nil {
-		t.Fatal("expected pre-tool status to be rejected")
+		t.Fatal("expected non-terminal status to be rejected")
 	}
 }
 

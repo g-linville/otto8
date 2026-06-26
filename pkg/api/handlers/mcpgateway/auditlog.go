@@ -112,7 +112,7 @@ func (a *auditLogInput) UnmarshalJSON(data []byte) error {
 		MCPFields:  &in.MCPAuditLogFields,
 		Encrypted:  in.Encrypted,
 	}
-	a.MCPAuditLog.MCPFields.ResponseReceived = in.ResponseReceived
+	a.MCPFields.ResponseReceived = in.ResponseReceived
 	a.Metadata = in.Metadata
 	a.Subject = in.Subject
 	return nil
@@ -345,6 +345,19 @@ func (h *AuditLogHandler) GetAuditLog(req api.Context) error {
 	}
 
 	canAccessFullPayload := req.UserIsAuditor()
+	if log.SourceType == types.AuditLogSourceTypeLocalAgentToolCall {
+		if !req.UserIsAdmin() && !req.UserIsAuditor() {
+			return types.NewErrForbidden("you do not have access to this audit log")
+		}
+		if canAccessFullPayload {
+			log, err = req.GatewayClient.GetMCPAuditLog(req.Context(), uint(auditLogID), true)
+			if err != nil {
+				return err
+			}
+		}
+		return req.Write(gatewaytypes.ConvertMCPAuditLog(*log))
+	}
+
 	if !req.UserIsAuditor() {
 		mcp := log.MCP()
 		ownServerMCPIDs, err := getOwnServerMCPIDs(req)

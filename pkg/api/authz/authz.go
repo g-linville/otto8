@@ -244,6 +244,9 @@ var (
 			"GET /api/mcp-stats",
 			"GET /api/mcp-stats/{mcp_id}",
 
+			// Submission of local agent tool call audit logs
+			"POST /api/local-agent-audit-logs",
+
 			// Allow basic users to create and list projects
 			"POST /api/projects",
 			"GET /api/projects",
