@@ -4,6 +4,7 @@ package types
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	types2 "github.com/obot-platform/obot/apiclient/types"
@@ -127,6 +128,10 @@ func (a *MCPAuditLog) MCP() *MCPAuditLogFields {
 	return a.MCPFields
 }
 
+func (a *MCPAuditLog) LocalAgentToolCall() *LocalAgentToolCallAuditLogFields {
+	return a.LocalAgentToolCallFields
+}
+
 func (a *MCPAuditLog) ValidateSourceFields() error {
 	if a == nil {
 		return nil
@@ -139,13 +144,67 @@ func (a *MCPAuditLog) ValidateSourceFields() error {
 		if hasLocalAgentFields {
 			return errors.New("local agent audit fields cannot be populated for MCP audit logs")
 		}
+		if !hasMCPFields {
+			return errors.New("MCP audit fields must be populated for MCP audit logs")
+		}
 	case types2.AuditLogSourceTypeLocalAgentToolCall:
 		if hasMCPFields {
 			return errors.New("MCP audit fields cannot be populated for local agent tool call audit logs")
 		}
+		if !hasLocalAgentFields {
+			return errors.New("local agent audit fields must be populated for local agent tool call audit logs")
+		}
 	default:
 		return errors.New("invalid audit log source type")
 	}
+	return nil
+}
+
+func (a *MCPAuditLog) ValidateCompletedLocalAgentToolCall() error {
+	if err := a.ValidateSourceFields(); err != nil {
+		return err
+	}
+	local := a.LocalAgentToolCall()
+	if local == nil {
+		return errors.New("local agent audit fields must be populated")
+	}
+
+	if local.AgentProvider == "" {
+		return errors.New("agent provider is required")
+	}
+	switch types2.LocalAgentProvider(local.AgentProvider) {
+	case types2.LocalAgentProviderClaudeCode, types2.LocalAgentProviderCodex, types2.LocalAgentProviderVSCode, types2.LocalAgentProviderCursor:
+	default:
+		return fmt.Errorf("invalid agent provider %q", local.AgentProvider)
+	}
+
+	if local.ObservedAt.IsZero() {
+		return errors.New("observed at is required")
+	}
+	if local.ToolName == "" {
+		return errors.New("tool name is required")
+	}
+	if len(local.ToolInput) == 0 {
+		return errors.New("tool input is required")
+	}
+	if local.Status == "" {
+		return errors.New("status is required")
+	}
+	switch types2.LocalAgentAuditLogStatus(local.Status) {
+	case types2.LocalAgentAuditLogStatusSucceeded, types2.LocalAgentAuditLogStatusFailed, types2.LocalAgentAuditLogStatusDenied, types2.LocalAgentAuditLogStatusTimeout:
+	default:
+		return fmt.Errorf("invalid terminal status %q", local.Status)
+	}
+	if local.IdempotencyKey == "" {
+		return errors.New("idempotency key is required")
+	}
+	if len(local.RawHookPayload) == 0 {
+		return errors.New("raw hook payload is required")
+	}
+	if local.CLIVersion == "" {
+		return errors.New("CLI version is required")
+	}
+
 	return nil
 }
 

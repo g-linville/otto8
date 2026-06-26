@@ -14,6 +14,7 @@ import (
 	types2 "github.com/obot-platform/obot/apiclient/types"
 	"github.com/obot-platform/obot/pkg/gateway/types"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/storage/value"
 )
@@ -25,16 +26,35 @@ var (
 	}
 )
 
-func (c *Client) insertMCPAuditLogs(ctx context.Context, logs []types.MCPAuditLog) error {
+func (c *Client) insertAuditLogs(ctx context.Context, logs []types.MCPAuditLog) error {
 	if len(logs) == 0 {
 		return nil
 	}
 
-	// Separate logs into three categories
-	toInsert := make([]types.MCPAuditLog, 0, len(logs)/2)
-	responseOnlyLogs := make([]types.MCPAuditLog, 0, len(logs)/2)
-
+	mcpLogs := make([]types.MCPAuditLog, 0, len(logs))
+	localAgentLogs := make([]types.MCPAuditLog, 0)
 	for _, log := range logs {
+		if log.SourceType == types2.AuditLogSourceTypeLocalAgentToolCall {
+			localAgentLogs = append(localAgentLogs, log)
+			continue
+		}
+		mcpLogs = append(mcpLogs, log)
+	}
+
+	if len(localAgentLogs) > 0 {
+		if err := c.insertLocalAgentToolCallAuditLogs(ctx, localAgentLogs); err != nil {
+			return err
+		}
+	}
+	if len(mcpLogs) == 0 {
+		return nil
+	}
+
+	// Separate logs into three categories
+	toInsert := make([]types.MCPAuditLog, 0, len(mcpLogs)/2)
+	responseOnlyLogs := make([]types.MCPAuditLog, 0, len(mcpLogs)/2)
+
+	for _, log := range mcpLogs {
 		// Convert timestamp to UTC for consistency
 		log.CreatedAt = log.CreatedAt.UTC()
 		log.NormalizeMCPFields()
@@ -136,6 +156,91 @@ func (c *Client) insertMCPAuditLogs(ctx context.Context, logs []types.MCPAuditLo
 
 		return nil
 	})
+}
+
+func (c *Client) CreateLocalAgentToolCallAuditLogs(ctx context.Context, logs []types.MCPAuditLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
+	toInsert := make([]types.MCPAuditLog, len(logs))
+	for i, log := range logs {
+		toInsert[i] = cloneMCPAuditLog(log)
+		if toInsert[i].SourceType == "" {
+			toInsert[i].SourceType = types2.AuditLogSourceTypeLocalAgentToolCall
+		}
+		if err := prepareLocalAgentToolCallAuditLog(&toInsert[i]); err != nil {
+			return fmt.Errorf("invalid local agent audit log: %w", err)
+		}
+		if err := c.encryptMCPAuditLog(ctx, &toInsert[i]); err != nil {
+			return fmt.Errorf("failed to encrypt local agent audit log: %w", err)
+		}
+	}
+
+	return c.insertPreparedLocalAgentToolCallAuditLogs(ctx, toInsert)
+}
+
+func (c *Client) insertLocalAgentToolCallAuditLogs(ctx context.Context, logs []types.MCPAuditLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
+	toInsert := make([]types.MCPAuditLog, len(logs))
+	for i, log := range logs {
+		toInsert[i] = cloneMCPAuditLog(log)
+		if err := prepareLocalAgentToolCallAuditLog(&toInsert[i]); err != nil {
+			return fmt.Errorf("invalid local agent audit log: %w", err)
+		}
+	}
+
+	return c.insertPreparedLocalAgentToolCallAuditLogs(ctx, toInsert)
+}
+
+func (c *Client) insertPreparedLocalAgentToolCallAuditLogs(ctx context.Context, logs []types.MCPAuditLog) error {
+	return c.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "idempotency_key"}},
+		DoNothing: true,
+	}).CreateInBatches(logs, 100).Error
+}
+
+func prepareLocalAgentToolCallAuditLog(log *types.MCPAuditLog) error {
+	if log.SourceType == "" {
+		log.SourceType = types2.AuditLogSourceTypeLocalAgentToolCall
+	}
+	if log.SourceType != types2.AuditLogSourceTypeLocalAgentToolCall {
+		return fmt.Errorf("source type must be %q", types2.AuditLogSourceTypeLocalAgentToolCall)
+	}
+	if err := log.ValidateCompletedLocalAgentToolCall(); err != nil {
+		return err
+	}
+	local := log.LocalAgentToolCall()
+	local.ObservedAt = local.ObservedAt.UTC()
+	if local.StartedAt != nil {
+		startedAt := local.StartedAt.UTC()
+		local.StartedAt = &startedAt
+	}
+	if log.CreatedAt.IsZero() {
+		log.CreatedAt = local.ObservedAt
+	} else {
+		log.CreatedAt = log.CreatedAt.UTC()
+	}
+	return nil
+}
+
+func cloneMCPAuditLog(log types.MCPAuditLog) types.MCPAuditLog {
+	if log.MCPFields != nil {
+		mcp := *log.MCPFields
+		log.MCPFields = &mcp
+	}
+	if log.LocalAgentToolCallFields != nil {
+		local := *log.LocalAgentToolCallFields
+		if local.StartedAt != nil {
+			startedAt := *local.StartedAt
+			local.StartedAt = &startedAt
+		}
+		log.LocalAgentToolCallFields = &local
+	}
+	return log
 }
 
 // GetMCPAuditLogs retrieves MCP audit logs with optional filters
@@ -301,16 +406,8 @@ session_id %[1]s ? OR request_id %[1]s ? OR user_agent %[1]s ?`
 
 	// Decrypt the logs after fetching
 	for i := range logs {
-		mcp := logs[i].MCP()
 		if !opts.WithRequestAndResponse {
-			// These are the only fields that are encrypted right now.
-			// So, just blank them out and skip decryption.
-			mcp.RequestBody = nil
-			mcp.MutatedRequestBody = nil
-			mcp.ResponseBody = nil
-			mcp.OriginalResponseBody = nil
-			mcp.RequestHeaders = nil
-			mcp.ResponseHeaders = nil
+			scrubSensitiveAuditLogFields(&logs[i], true)
 		} else {
 			if err := c.decryptMCPAuditLog(ctx, &logs[i]); err != nil {
 				return nil, 0, fmt.Errorf("failed to decrypt MCP audit log: %w", err)
@@ -331,21 +428,41 @@ func (c *Client) GetMCPAuditLog(ctx context.Context, id uint, withRequestAndResp
 		return nil, err
 	}
 
-	// Decrypt if requested
-	if err := c.decryptMCPAuditLog(ctx, &log); err != nil {
-		return nil, fmt.Errorf("failed to decrypt MCP audit log: %w", err)
-	}
 	if !withRequestAndResponse {
-		mcp := log.MCP()
-		// Blank out encrypted fields
-		mcp.RequestBody = nil
-		mcp.MutatedRequestBody = nil
-		mcp.ResponseBody = nil
-		mcp.OriginalResponseBody = nil
-		// Request and response headers are intentionally kept non-nil, since sensitive values are redacted
+		scrubSensitiveAuditLogFields(&log, false)
+	} else if err := c.decryptMCPAuditLog(ctx, &log); err != nil {
+		return nil, fmt.Errorf("failed to decrypt MCP audit log: %w", err)
 	}
 
 	return &log, nil
+}
+
+func scrubSensitiveAuditLogFields(log *types.MCPAuditLog, scrubRequestAndResponse bool) {
+	if log.SourceType == types2.AuditLogSourceTypeLocalAgentToolCall {
+		local := log.LocalAgentToolCall()
+		if local == nil {
+			return
+		}
+		local.ToolInput = nil
+		local.ToolOutput = nil
+		local.RawHookPayload = nil
+		local.TranscriptPath = ""
+		return
+	}
+
+	mcp := log.MCP()
+	if mcp == nil {
+		return
+	}
+	mcp.RequestBody = nil
+	mcp.MutatedRequestBody = nil
+	mcp.ResponseBody = nil
+	mcp.OriginalResponseBody = nil
+
+	if scrubRequestAndResponse {
+		mcp.RequestHeaders = nil
+		mcp.ResponseHeaders = nil
+	}
 }
 
 func (c *Client) GetAuditLogFilterOptions(ctx context.Context, option string, opts MCPAuditLogOptions, exclude ...any) ([]string, error) {
@@ -608,19 +725,22 @@ func (c *Client) encryptMCPAuditLog(ctx context.Context, log *types.MCPAuditLog)
 	if c.encryptionConfig == nil {
 		return nil
 	}
-	mcp := log.MCP()
 
 	transformer := c.encryptionConfig.Transformers[mcpAuditLogGroupResource]
 	if transformer == nil {
 		return nil
 	}
 
+	dataCtx := mcpAuditLogDataCtx(log)
+	if log.SourceType == types2.AuditLogSourceTypeLocalAgentToolCall {
+		return encryptLocalAgentToolCallAuditLog(ctx, transformer, dataCtx, log)
+	}
+	mcp := log.MCP()
+
 	var (
 		b    []byte
 		err  error
 		errs []error
-
-		dataCtx = mcpAuditLogDataCtx(log)
 	)
 
 	if len(mcp.RequestBody) > 0 {
@@ -680,20 +800,23 @@ func (c *Client) decryptMCPAuditLog(ctx context.Context, log *types.MCPAuditLog)
 	if !log.Encrypted || c.encryptionConfig == nil {
 		return nil
 	}
-	mcp := log.MCP()
 
 	transformer := c.encryptionConfig.Transformers[mcpAuditLogGroupResource]
 	if transformer == nil {
 		return nil
 	}
 
+	dataCtx := mcpAuditLogDataCtx(log)
+	if log.SourceType == types2.AuditLogSourceTypeLocalAgentToolCall {
+		return decryptLocalAgentToolCallAuditLog(ctx, transformer, dataCtx, log)
+	}
+	mcp := log.MCP()
+
 	var (
 		out, decoded []byte
 		n            int
 		err          error
 		errs         []error
-
-		dataCtx = mcpAuditLogDataCtx(log)
 	)
 
 	if len(mcp.RequestBody) > 0 {
@@ -783,7 +906,101 @@ func (c *Client) decryptMCPAuditLog(ctx context.Context, log *types.MCPAuditLog)
 	return errors.Join(errs...)
 }
 
+func encryptLocalAgentToolCallAuditLog(ctx context.Context, transformer value.Transformer, dataCtx value.Context, log *types.MCPAuditLog) error {
+	local := log.LocalAgentToolCall()
+	if local == nil {
+		return nil
+	}
+
+	var errs []error
+	errs = append(errs, encryptRawAuditLogField(ctx, transformer, dataCtx, &local.ToolInput))
+	errs = append(errs, encryptRawAuditLogField(ctx, transformer, dataCtx, &local.ToolOutput))
+	errs = append(errs, encryptRawAuditLogField(ctx, transformer, dataCtx, &local.RawHookPayload))
+	errs = append(errs, encryptStringAuditLogField(ctx, transformer, dataCtx, &local.TranscriptPath))
+	log.Encrypted = true
+	return errors.Join(errs...)
+}
+
+func decryptLocalAgentToolCallAuditLog(ctx context.Context, transformer value.Transformer, dataCtx value.Context, log *types.MCPAuditLog) error {
+	local := log.LocalAgentToolCall()
+	if local == nil {
+		return nil
+	}
+
+	var errs []error
+	errs = append(errs, decryptRawAuditLogField(ctx, transformer, dataCtx, &local.ToolInput))
+	errs = append(errs, decryptRawAuditLogField(ctx, transformer, dataCtx, &local.ToolOutput))
+	errs = append(errs, decryptRawAuditLogField(ctx, transformer, dataCtx, &local.RawHookPayload))
+	errs = append(errs, decryptStringAuditLogField(ctx, transformer, dataCtx, &local.TranscriptPath))
+	return errors.Join(errs...)
+}
+
+func encryptRawAuditLogField(ctx context.Context, transformer value.Transformer, dataCtx value.Context, field *json.RawMessage) error {
+	if len(*field) == 0 {
+		return nil
+	}
+	b, err := transformer.TransformToStorage(ctx, *field, dataCtx)
+	if err != nil {
+		return err
+	}
+	*field = json.RawMessage(base64.StdEncoding.EncodeToString(b))
+	return nil
+}
+
+func decryptRawAuditLogField(ctx context.Context, transformer value.Transformer, dataCtx value.Context, field *json.RawMessage) error {
+	if len(*field) == 0 {
+		return nil
+	}
+	decoded := make([]byte, base64.StdEncoding.DecodedLen(len(*field)))
+	n, err := base64.StdEncoding.Decode(decoded, *field)
+	if err != nil {
+		return err
+	}
+	out, _, err := transformer.TransformFromStorage(ctx, decoded[:n], dataCtx)
+	if err != nil {
+		return err
+	}
+	*field = json.RawMessage(out)
+	return nil
+}
+
+func encryptStringAuditLogField(ctx context.Context, transformer value.Transformer, dataCtx value.Context, field *string) error {
+	if *field == "" {
+		return nil
+	}
+	b, err := transformer.TransformToStorage(ctx, []byte(*field), dataCtx)
+	if err != nil {
+		return err
+	}
+	*field = base64.StdEncoding.EncodeToString(b)
+	return nil
+}
+
+func decryptStringAuditLogField(ctx context.Context, transformer value.Transformer, dataCtx value.Context, field *string) error {
+	if *field == "" {
+		return nil
+	}
+	decoded := make([]byte, base64.StdEncoding.DecodedLen(len(*field)))
+	n, err := base64.StdEncoding.Decode(decoded, []byte(*field))
+	if err != nil {
+		return err
+	}
+	out, _, err := transformer.TransformFromStorage(ctx, decoded[:n], dataCtx)
+	if err != nil {
+		return err
+	}
+	*field = string(out)
+	return nil
+}
+
 func mcpAuditLogDataCtx(log *types.MCPAuditLog) value.Context {
+	if log.SourceType == types2.AuditLogSourceTypeLocalAgentToolCall {
+		local := log.LocalAgentToolCall()
+		if local == nil {
+			return value.DefaultContext(fmt.Sprintf("%s/local-agent/%s", mcpAuditLogGroupResource.String(), log.UserID))
+		}
+		return value.DefaultContext(fmt.Sprintf("%s/local-agent/%s/%s", mcpAuditLogGroupResource.String(), local.IdempotencyKey, log.UserID))
+	}
 	mcp := log.MCP()
 	return value.DefaultContext(fmt.Sprintf("%s/%s/%s", mcpAuditLogGroupResource.String(), mcp.MCPID, log.UserID))
 }
