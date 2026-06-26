@@ -130,7 +130,7 @@ func (c *Client) persistAuditLogs() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := c.insertMCPAuditLogs(ctx, buf); err != nil {
+	if err := c.insertAuditLogs(ctx, buf); err != nil {
 		c.auditLock.Lock()
 		c.auditBuffer = append(buf, c.auditBuffer...)
 		c.auditLock.Unlock()
