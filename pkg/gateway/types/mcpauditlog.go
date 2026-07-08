@@ -47,7 +47,7 @@ type MCPAuditLogFields struct {
 	ProcessingTimeMs          int64                                 `json:"processingTimeMs" gorm:"index"`
 	SessionID                 string                                `json:"sessionID,omitempty" gorm:"index"`
 	WebhookStatuses           datatypes.JSONSlice[MCPWebhookStatus] `json:"webhookStatuses,omitempty"`
-	ObotAuditCorrelationID    string                                `json:"obotAuditCorrelationID,omitempty" gorm:"column:obot_audit_correlation_id;index"`
+	ObotAuditCorrelationID    string                                `json:"obotAuditCorrelationID,omitempty" gorm:"index"`
 	ResponseReceived          bool                                  `json:"responseReceived"`
 
 	// Additional metadata
@@ -86,7 +86,7 @@ type LocalAgentToolCallAuditLogFields struct {
 	MCPToolName string `json:"mcpToolName,omitempty" gorm:"index"`
 
 	// ObotAuditCorrelationID is the client-provided key used to correlate with MCP audit logs.
-	ObotAuditCorrelationID string `json:"obotAuditCorrelationID,omitempty" gorm:"column:obot_audit_correlation_id;index"`
+	ObotAuditCorrelationID string `json:"obotAuditCorrelationID,omitempty" gorm:"column:local_agent_obot_audit_correlation_id;index"`
 
 	Model          string `json:"model,omitempty" gorm:"index"`
 	ModelID        string `json:"modelID,omitempty" gorm:"index"`

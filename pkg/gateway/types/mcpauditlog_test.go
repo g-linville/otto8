@@ -364,33 +364,6 @@ func TestNewLocalAgentToolCallAuditLogFromManifest(t *testing.T) {
 	}
 }
 
-func TestObotAuditCorrelationIDUsesSharedDatabaseColumn(t *testing.T) {
-	parsed, err := schema.Parse(&MCPAuditLog{}, &sync.Map{}, schema.NamingStrategy{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var fieldPaths [][]string
-	for _, field := range parsed.Fields {
-		if field.DBName == "obot_audit_correlation_id" {
-			fieldPaths = append(fieldPaths, field.BindNames)
-		}
-	}
-	if len(fieldPaths) != 2 {
-		t.Fatalf("expected MCP and local-agent correlation fields to share one DB column name, got %#v", fieldPaths)
-	}
-
-	var dbNameCount int
-	for _, dbName := range parsed.DBNames {
-		if dbName == "obot_audit_correlation_id" {
-			dbNameCount++
-		}
-	}
-	if dbNameCount != 1 {
-		t.Fatalf("expected one database column for correlation ID, got %d in %#v", dbNameCount, parsed.DBNames)
-	}
-}
-
 func TestResponseReceivedUsesMCPDatabaseColumn(t *testing.T) {
 	parsed, err := schema.Parse(&MCPAuditLog{}, &sync.Map{}, schema.NamingStrategy{})
 	if err != nil {

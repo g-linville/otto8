@@ -172,6 +172,60 @@ func TestInsertLocalAgentAuditLogsCompletedSuccess(t *testing.T) {
 	if stored.MCPFields != nil && (stored.MCPFields.MCPID != "" || len(stored.MCPFields.RequestBody) > 0 || len(stored.MCPFields.ResponseBody) > 0) {
 		t.Fatalf("expected no populated MCP fields, got %#v", stored.MCPFields)
 	}
+	if stored.LocalAgentToolCallFields.ObotAuditCorrelationID != "correlation-1" {
+		t.Fatalf("expected local-agent correlation ID to round-trip, got %q", stored.LocalAgentToolCallFields.ObotAuditCorrelationID)
+	}
+
+	var storedCorrelationID string
+	if err := c.db.WithContext(ctx).
+		Model(&types.MCPAuditLog{}).
+		Select("local_agent_obot_audit_correlation_id").
+		Where("id = ?", stored.ID).
+		Scan(&storedCorrelationID).Error; err != nil {
+		t.Fatalf("load stored correlation column: %v", err)
+	}
+	if storedCorrelationID != "correlation-1" {
+		t.Fatalf("expected local-agent correlation column to be populated, got %q", storedCorrelationID)
+	}
+}
+
+func TestAuditLogsCanJoinBySourceSpecificCorrelationColumns(t *testing.T) {
+	c := newTestClient(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	mcpLog := types.MCPAuditLog{
+		CreatedAt:  now,
+		SourceType: types2.AuditLogSourceTypeMCP,
+		UserID:     "user-1",
+		MCPFields: &types.MCPAuditLogFields{
+			MCPID:                  "mcp-1",
+			CallType:               "tools/call",
+			CallIdentifier:         "generate_bar_chart",
+			RequestBody:            json.RawMessage(`{"name":"generate_bar_chart"}`),
+			ObotAuditCorrelationID: "correlation-1",
+		},
+	}
+	localLog := validLocalAgentAuditLog(now, "entry-1", string(types2.LocalAgentAuditLogStatusSucceeded))
+
+	if err := c.insertMCPAuditLogs(ctx, []types.MCPAuditLog{mcpLog}); err != nil {
+		t.Fatalf("insert MCP audit log: %v", err)
+	}
+	if err := c.InsertLocalAgentAuditLogs(ctx, []types.MCPAuditLog{localLog}); err != nil {
+		t.Fatalf("insert local-agent audit log: %v", err)
+	}
+
+	var matches int64
+	if err := c.db.WithContext(ctx).
+		Table("mcp_audit_logs AS mcp").
+		Joins("JOIN mcp_audit_logs AS local ON local.local_agent_obot_audit_correlation_id = mcp.obot_audit_correlation_id").
+		Where("mcp.source_type = ? AND local.source_type = ?", types2.AuditLogSourceTypeMCP, types2.AuditLogSourceTypeLocalAgentToolCall).
+		Count(&matches).Error; err != nil {
+		t.Fatalf("join audit logs by correlation ID: %v", err)
+	}
+	if matches != 1 {
+		t.Fatalf("expected one correlated MCP/local-agent pair, got %d", matches)
+	}
 }
 
 func TestInsertLocalAgentAuditLogsAcceptsTerminalStatuses(t *testing.T) {
