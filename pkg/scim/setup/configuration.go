@@ -70,6 +70,8 @@ func CheckConfiguration(ctx context.Context, gateway *gclient.Client, authProvid
 	}
 
 	params := adapter.EffectiveParameters(authProvider.Spec.AuthProviderManifest, state)
+	// The SCIM choice parameter is dropped below, so the choice is read first.
+	scimChosen := hasRules && adapter.SCIMChosen(a, secrets)
 	for _, name := range params.Dropped {
 		delete(secrets, name)
 	}
@@ -100,7 +102,7 @@ func CheckConfiguration(ctx context.Context, gateway *gclient.Client, authProvid
 		}
 		return params, SetupKept, nil
 	}
-	if adapter.DirectoryParametersProvided(a, secrets) {
+	if !scimChosen {
 		return params, SetupKept, nil
 	}
 	return params, SetupSCIMFirst, nil

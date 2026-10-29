@@ -204,7 +204,7 @@ func (c *Client) CreateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 		}
 		switch len(candidates) {
 		case 0:
-			binding.GroupID = a.NewGroupID(conn.GroupIDPrefix, binding.ID)
+			binding.GroupID = a.NewGroupID(conn.GroupIDPrefix, binding.ID, "")
 			binding.Origin = types.SCIMGroupBindingOriginCreated
 			if err := tx.Create(&types.Group{
 				ID:                    binding.GroupID,
