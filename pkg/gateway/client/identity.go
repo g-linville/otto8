@@ -857,6 +857,10 @@ func (c *Client) getDefaultRole(ctx context.Context) (types2.Role, error) {
 }
 
 func (c *Client) encryptIdentity(ctx context.Context, identity *types.Identity) error {
+	// Every write of an identity encrypts it first, so the hash of the plaintext lookup ID is kept here, whether or not
+	// encryption is configured.
+	identity.HashedProviderGroupLookupID = hashOptional(identity.ProviderGroupLookupID)
+
 	if c.encryptionConfig == nil {
 		return nil
 	}
