@@ -28,6 +28,8 @@ const (
 // SCIMGroupInput holds the writable attributes of a SCIM group, as a create or a full replacement sends them.
 type SCIMGroupInput struct {
 	DisplayName string
+	// ExternalID is the identity provider's identifier for the group, if it sent one.
+	ExternalID string
 	// MemberIDs are the SCIM user IDs of the complete member set.
 	MemberIDs []string
 }
@@ -50,6 +52,9 @@ type SCIMGroup struct {
 	// GroupID is the ID of the Obot group the SCIM group is bound to.
 	GroupID     string
 	DisplayName string
+	// ExternalID is the identity provider's identifier for the group. It is empty until an adapter binds groups by
+	// externalId.
+	ExternalID string
 	// Members is nil unless members were requested.
 	Members   []SCIMGroupMember
 	Revision  int64
@@ -67,6 +72,7 @@ type SCIMGroupMember struct {
 type SCIMGroupFilter struct {
 	ID          string
 	DisplayName string
+	ExternalID  string
 }
 
 type scimGroupRow struct {
@@ -81,6 +87,11 @@ func (c *Client) ListSCIMGroups(ctx context.Context, connectionID string, filter
 		groups []SCIMGroup
 		total  int64
 	)
+	if filter.ExternalID != "" {
+		// No adapter binds groups by externalId yet, so no group has one.
+		return nil, 0, nil
+	}
+
 	if err := c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		query := scimGroupQuery(tx, connectionID)
 		if filter.ID != "" {

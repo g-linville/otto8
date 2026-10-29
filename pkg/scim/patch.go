@@ -150,8 +150,9 @@ func applyOperation(schema *resourceSchema, resource map[string]any, op patchOpe
 }
 
 // pathlessMembers returns the members of the value of an operation without a path, in the order they apply. JSON
-// objects have no order, so they apply by attribute, each attribute before the members that select a part of it,
-// which refine it. The members of an object under the resource's own schema URN are members too.
+// objects have no order, so they apply by schema and attribute, each attribute before the members that select a part
+// of it, which refine it. The members of an object under the resource's own schema URN, or under the URN of one of its
+// extensions, are members too.
 func pathlessMembers(schema *resourceSchema, values map[string]any) ([]pathlessMember, error) {
 	members := make([]pathlessMember, 0, len(values))
 	add := func(key string, value any) error {
@@ -168,7 +169,7 @@ func pathlessMembers(schema *resourceSchema, values map[string]any) ([]pathlessM
 	}
 
 	for key, value := range values {
-		if !strings.EqualFold(key, schema.ID) {
+		if !strings.EqualFold(key, schema.ID) && schema.extensionSchema(key) == nil {
 			if err := add(key, value); err != nil {
 				return nil, err
 			}
@@ -186,6 +187,12 @@ func pathlessMembers(schema *resourceSchema, values map[string]any) ([]pathlessM
 		}
 	}
 
+	extension := func(p patchPath) string {
+		if schema.extensionSchema(p.Attr.URN) == nil {
+			return ""
+		}
+		return strings.ToLower(p.Attr.URN)
+	}
 	part := func(p patchPath) int {
 		if p.Filter == nil && p.Attr.Sub == "" {
 			return 0
@@ -194,6 +201,7 @@ func pathlessMembers(schema *resourceSchema, values map[string]any) ([]pathlessM
 	}
 	slices.SortFunc(members, func(a, b pathlessMember) int {
 		return cmp.Or(
+			strings.Compare(extension(a.path), extension(b.path)),
 			strings.Compare(strings.ToLower(a.path.Attr.Name), strings.ToLower(b.path.Attr.Name)),
 			cmp.Compare(part(a.path), part(b.path)),
 			strings.Compare(a.key, b.key),
@@ -206,6 +214,9 @@ func pathlessMembers(schema *resourceSchema, values map[string]any) ([]pathlessM
 // schema ignores is left alone, and so is a read-only attribute that the operation leaves as it is, as when a client
 // echoes the id. Any other change to a read-only attribute is refused.
 func applyToTarget(schema *resourceSchema, resource map[string]any, op, target string, path patchPath, value any, rules adapter.PatchRules) error {
+	if ext := schema.extensionSchema(path.Attr.URN); ext != nil {
+		return applyToExtension(ext, resource, op, target, path, value, rules)
+	}
 	if !path.Attr.inSchema(schema) {
 		return badRequest(scimTypeInvalidPath, "attribute path %q is not in the %s schema", target, schema.Name)
 	}
@@ -241,6 +252,24 @@ func applyToTarget(schema *resourceSchema, resource map[string]any, op, target s
 		return badRequest(scimTypeMutability, "attribute %q cannot be removed", attr.Name)
 	}
 	return applyToPath(resource, attr, path, op, value, rules)
+}
+
+// applyToExtension applies an operation to an attribute of a schema extension, which the resource holds in an object
+// under the extension's URN. The object is removed when the operation leaves it empty.
+func applyToExtension(ext *resourceSchema, resource map[string]any, op, target string, path patchPath, value any, rules adapter.PatchRules) error {
+	obj, _ := resource[ext.ID].(map[string]any)
+	if obj == nil {
+		obj = map[string]any{}
+	}
+	if err := applyToTarget(ext, obj, op, target, path, value, rules); err != nil {
+		return err
+	}
+	if len(obj) == 0 {
+		delete(resource, ext.ID)
+	} else {
+		resource[ext.ID] = obj
+	}
+	return nil
 }
 
 // alreadyHeld reports whether the multi-valued attribute already holds every value that an add of value would add, so
@@ -685,17 +714,23 @@ func sameValue(attr *attribute, a, b any) bool {
 
 // selects reports whether a value that a remove lists selects an existing value of a multi-valued complex attribute:
 // it has the existing value's value, and every other sub-attribute it sets apart from primary is equal, as sameValue
-// compares them. So a listed email address removes that address whatever its type.
+// compares them. So a listed email address removes that address whatever its type. A value of an attribute without
+// a value sub-attribute, such as an address, must set at least one sub-attribute apart from primary.
 func selects(attr *attribute, selector, value map[string]any) bool {
-	if absent(selector["value"]) {
-		return false
-	}
+	set := false
 	for _, sub := range attr.SubAttributes {
-		if sub.Name != "primary" && !absent(selector[sub.Name]) && !subValuesEqual(sub, selector[sub.Name], value[sub.Name]) {
+		if sub.Name == "primary" || absent(selector[sub.Name]) {
+			continue
+		}
+		if !subValuesEqual(sub, selector[sub.Name], value[sub.Name]) {
 			return false
 		}
+		set = true
 	}
-	return true
+	if attr.subAttribute("value") != nil {
+		return !absent(selector["value"])
+	}
+	return set
 }
 
 func subValuesEqual(sub *attribute, a, b any) bool {

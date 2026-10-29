@@ -309,10 +309,10 @@ func (h *Handler) route(w http.ResponseWriter, r *request) {
 }
 
 // GET /scim/v2/Users
-// Lists the users that SCIM has provisioned, optionally filtered by userName or id.
+// Lists the users that SCIM has provisioned, optionally filtered by userName, id, or externalId.
 func (h *Handler) listUsers(w http.ResponseWriter, r *request) {
 	q := r.URL.Query()
-	f, err := parseListFilter(userResourceSchema, q.Get("filter"), "userName", "id")
+	f, err := parseListFilter(userResourceSchema, q.Get("filter"), "userName", "id", "externalId")
 	if err != nil {
 		writeError(w, toError(err))
 		return
@@ -329,7 +329,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *request) {
 	}
 
 	if f != nil && f.Value == "" {
-		// No user has an empty userName or id.
+		// No user has an empty userName, id, or externalId.
 		writeList(w, []any{}, 0, startIndex)
 		return
 	}
@@ -341,10 +341,12 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *request) {
 			filter.UserName = f.Value
 		case "id":
 			filter.ID = f.Value
+		case "externalId":
+			filter.ExternalID = f.Value
 		}
 	}
 
-	users, total, err := h.gateway.ListSCIMUsers(r.Context(), r.conn.ID, filter, gclient.SCIMPage{
+	users, total, err := h.gateway.ListSCIMUsers(r.Context(), r.conn.SCIMConnection, filter, gclient.SCIMPage{
 		Offset: startIndex - 1,
 		Limit:  count,
 	})
@@ -493,10 +495,10 @@ func (h *Handler) patchUser(w http.ResponseWriter, r *request, id string) {
 }
 
 // GET /scim/v2/Groups
-// Lists the groups that SCIM has bound or created, optionally filtered by displayName or id.
+// Lists the groups that SCIM has bound or created, optionally filtered by displayName, id, or externalId.
 func (h *Handler) listGroups(w http.ResponseWriter, r *request) {
 	q := r.URL.Query()
-	f, err := parseListFilter(groupResourceSchema, q.Get("filter"), "displayName", "id")
+	f, err := parseListFilter(groupResourceSchema, q.Get("filter"), "displayName", "id", "externalId")
 	if err != nil {
 		writeError(w, toError(err))
 		return
@@ -513,7 +515,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *request) {
 	}
 
 	if f != nil && f.Value == "" {
-		// No group has an empty displayName or id.
+		// No group has an empty displayName, id, or externalId.
 		writeList(w, []any{}, 0, startIndex)
 		return
 	}
@@ -525,6 +527,8 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *request) {
 			filter.DisplayName = f.Value
 		case "id":
 			filter.ID = f.Value
+		case "externalId":
+			filter.ExternalID = f.Value
 		}
 	}
 

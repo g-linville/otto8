@@ -33,7 +33,9 @@ func parseProjection(schema *resourceSchema, q url.Values) (*projection, error) 
 }
 
 // parseAttributeList parses a comma-separated list of attribute paths. Attributes that the schema does not
-// define are ignored, as they would be absent from the response anyway.
+// define are ignored, as they would be absent from the response anyway. A path into a schema extension keeps the
+// extension's URN, and other paths have none. A schema extension's URN alone names its whole object, which the
+// resource holds as though it were an attribute.
 func parseAttributeList(schema *resourceSchema, s string) ([]attrPath, error) {
 	if strings.TrimSpace(s) == "" {
 		return nil, nil
@@ -41,13 +43,28 @@ func parseAttributeList(schema *resourceSchema, s string) ([]attrPath, error) {
 
 	var paths []attrPath
 	for part := range strings.SplitSeq(s, ",") {
+		if ext := schema.extensionSchema(strings.TrimSpace(part)); ext != nil {
+			paths = append(paths, attrPath{
+				Name: ext.ID,
+			})
+			continue
+		}
+
 		path, ok := parseAttrPath(strings.TrimSpace(part))
 		if !ok {
 			return nil, badRequest(scimTypeInvalidValue, "invalid attribute %q", part)
 		}
-		attr := schema.attribute(path.Name)
-		if attr == nil || !path.inSchema(schema) {
+		target := schema
+		if ext := schema.extensionSchema(path.URN); ext != nil {
+			target = ext
+		}
+		attr := target.attribute(path.Name)
+		if attr == nil || !path.inSchema(target) {
 			continue
+		}
+		path.URN = ""
+		if target != schema {
+			path.URN = target.ID
 		}
 		path.Name = attr.Name
 		if path.Sub != "" {
@@ -87,15 +104,24 @@ func (p *projection) apply(resource map[string]any) map[string]any {
 			"schemas": resource["schemas"],
 		}
 		for _, a := range p.attributes {
-			v, ok := resource[a.Name]
+			from := attributesOf(resource, a.URN)
+			v, ok := from[a.Name]
 			if !ok {
 				continue
 			}
+			to := out
+			if a.URN != "" {
+				to, _ = out[a.URN].(map[string]any)
+				if to == nil {
+					to = map[string]any{}
+					out[a.URN] = to
+				}
+			}
 			if a.Sub == "" {
-				out[a.Name] = v
+				to[a.Name] = v
 				continue
 			}
-			out[a.Name] = mergeSubAttribute(out[a.Name], v, a.Sub)
+			to[a.Name] = mergeSubAttribute(to[a.Name], v, a.Sub)
 		}
 		return out
 	}
@@ -104,11 +130,15 @@ func (p *projection) apply(resource map[string]any) map[string]any {
 		if e.Name == "id" || e.Name == "schemas" {
 			continue
 		}
+		from := attributesOf(resource, e.URN)
 		if e.Sub == "" {
-			delete(resource, e.Name)
+			delete(from, e.Name)
+			if e.URN != "" && len(from) == 0 {
+				delete(resource, e.URN)
+			}
 			continue
 		}
-		switch v := resource[e.Name].(type) {
+		switch v := from[e.Name].(type) {
 		case map[string]any:
 			delete(v, e.Sub)
 		case []any:
@@ -120,6 +150,16 @@ func (p *projection) apply(resource map[string]any) map[string]any {
 		}
 	}
 	return resource
+}
+
+// attributesOf returns the object that holds the attributes of the schema extension with the given URN, or the
+// resource itself when the URN is empty. It is nil when the resource has none of the extension's attributes.
+func attributesOf(resource map[string]any, urn string) map[string]any {
+	if urn == "" {
+		return resource
+	}
+	m, _ := resource[urn].(map[string]any)
+	return m
 }
 
 // mergeSubAttribute adds the sub-attribute of value, a complex or multi-valued complex attribute, to projected.

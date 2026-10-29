@@ -223,6 +223,9 @@ type SCIMUserProfile struct {
 	Timezone          string           `json:"timezone,omitempty"`
 	Emails            []SCIMMultiValue `json:"emails,omitempty"`
 	PhoneNumbers      []SCIMMultiValue `json:"phoneNumbers,omitempty"`
+	Addresses         []SCIMAddress    `json:"addresses,omitempty"`
+	// EnterpriseUser holds the attributes of the enterprise User extension.
+	EnterpriseUser *SCIMEnterpriseUser `json:"enterpriseUser,omitempty"`
 }
 
 // SCIMName is the SCIM user's structured name.
@@ -241,6 +244,34 @@ type SCIMMultiValue struct {
 	Display string `json:"display,omitempty"`
 	Type    string `json:"type,omitempty"`
 	Primary bool   `json:"primary,omitempty"`
+}
+
+// SCIMAddress is one of a SCIM user's addresses.
+type SCIMAddress struct {
+	Formatted     string `json:"formatted,omitempty"`
+	StreetAddress string `json:"streetAddress,omitempty"`
+	Locality      string `json:"locality,omitempty"`
+	Region        string `json:"region,omitempty"`
+	PostalCode    string `json:"postalCode,omitempty"`
+	Country       string `json:"country,omitempty"`
+	Type          string `json:"type,omitempty"`
+	Primary       bool   `json:"primary,omitempty"`
+}
+
+// SCIMEnterpriseUser holds the attributes of the enterprise User extension of RFC 7643 section 4.3.
+type SCIMEnterpriseUser struct {
+	EmployeeNumber string       `json:"employeeNumber,omitempty"`
+	CostCenter     string       `json:"costCenter,omitempty"`
+	Organization   string       `json:"organization,omitempty"`
+	Division       string       `json:"division,omitempty"`
+	Department     string       `json:"department,omitempty"`
+	Manager        *SCIMManager `json:"manager,omitempty"`
+}
+
+// SCIMManager is a SCIM user's manager, as the identity provider identifies them. It is never resolved to a user.
+type SCIMManager struct {
+	Value string `json:"value,omitempty"`
+	Ref   string `json:"$ref,omitempty"`
 }
 
 // HasToken reports whether the connection has a current bearer token. A connection without one answers every request

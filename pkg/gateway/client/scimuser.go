@@ -66,8 +66,9 @@ type SCIMGroupReference struct {
 
 // SCIMUserFilter selects SCIM users. Empty fields match everything.
 type SCIMUserFilter struct {
-	ID       string
-	UserName string
+	ID         string
+	UserName   string
+	ExternalID string
 }
 
 // SCIMPage selects a page of results. Offset is zero-based. A zero Limit returns only the total.
@@ -149,11 +150,13 @@ func (e *scimCreateRaceError) Unwrap() error {
 
 // ListSCIMUsers returns the connection's bound users that match filter, oldest first, and the total number of matches.
 // Users that SCIM has not provisioned are never returned.
-func (c *Client) ListSCIMUsers(ctx context.Context, connectionID string, filter SCIMUserFilter, page SCIMPage) ([]SCIMUser, int64, error) {
+func (c *Client) ListSCIMUsers(ctx context.Context, conn *types.SCIMConnection, filter SCIMUserFilter, page SCIMPage) ([]SCIMUser, int64, error) {
 	var (
-		total          int64
-		users          []SCIMUser
-		hashedUserName string
+		total              int64
+		users              []SCIMUser
+		hashedUserName     string
+		hashedNativeUserID string
+		connectionID       = conn.ID
 	)
 	if filter.UserName != "" {
 		var err error
@@ -161,6 +164,24 @@ func (c *Client) ListSCIMUsers(ctx context.Context, connectionID string, filter 
 			// No user has a userName that cannot be prepared.
 			return nil, 0, nil
 		}
+	}
+	if filter.ExternalID != "" {
+		a, err := connectionAdapter(conn)
+		if err != nil {
+			return nil, 0, err
+		}
+		// A bound user's native ID is the one the adapter derives from their externalId. The filter names no
+		// userName, so the externalId stands in for it, which an adapter that requires the two to match, as OneLogin's
+		// does, accepts.
+		nativeUserID, err := a.NativeUserID(adapter.User{
+			UserName:   filter.ExternalID,
+			ExternalID: filter.ExternalID,
+		})
+		if err != nil {
+			// No user has an externalId that the adapter refuses.
+			return nil, 0, nil
+		}
+		hashedNativeUserID = hash.String(nativeUserID)
 	}
 
 	if err := c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -170,6 +191,9 @@ func (c *Client) ListSCIMUsers(ctx context.Context, connectionID string, filter 
 		}
 		if hashedUserName != "" {
 			query = query.Where("hashed_user_name = ?", hashedUserName)
+		}
+		if hashedNativeUserID != "" {
+			query = query.Where("hashed_native_user_id = ?", hashedNativeUserID)
 		}
 
 		if err := query.Count(&total).Error; err != nil {
@@ -878,7 +902,8 @@ func validateSCIMUserInput(input SCIMUserInput) error {
 	return err
 }
 
-// normalizeSCIMUserProfile makes equal profiles compare equal: an empty name is absent, and empty lists are nil.
+// normalizeSCIMUserProfile makes equal profiles compare equal: an empty name, enterprise extension, or manager is
+// absent, and empty lists are nil.
 func normalizeSCIMUserProfile(profile types.SCIMUserProfile) types.SCIMUserProfile {
 	if profile.Name != nil && *profile.Name == (types.SCIMName{}) {
 		profile.Name = nil
@@ -888,6 +913,20 @@ func normalizeSCIMUserProfile(profile types.SCIMUserProfile) types.SCIMUserProfi
 	}
 	if len(profile.PhoneNumbers) == 0 {
 		profile.PhoneNumbers = nil
+	}
+	if len(profile.Addresses) == 0 {
+		profile.Addresses = nil
+	}
+	if profile.EnterpriseUser != nil {
+		enterprise := *profile.EnterpriseUser
+		if enterprise.Manager != nil && *enterprise.Manager == (types.SCIMManager{}) {
+			enterprise.Manager = nil
+		}
+		if enterprise == (types.SCIMEnterpriseUser{}) {
+			profile.EnterpriseUser = nil
+		} else {
+			profile.EnterpriseUser = &enterprise
+		}
 	}
 	return profile
 }
