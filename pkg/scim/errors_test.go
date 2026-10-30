@@ -38,6 +38,8 @@ func TestErrorHints(t *testing.T) {
 			write: func(_ *testing.T, w http.ResponseWriter) {
 				(&Handler{}).route(w, &request{
 					Request: httptest.NewRequest(http.MethodDelete, PathPrefix+"Users/u1", nil),
+					// The connection's adapter does not delete users.
+					conn:    &connection{},
 					segment: []string{"Users", "u1"},
 				})
 			},

@@ -80,6 +80,8 @@ type connection struct {
 	baseURL string
 	// patchRules are how the connection's identity provider departs from RFC 7644 in PATCH requests.
 	patchRules adapter.PatchRules
+	// rules are the connection's identity provider's choices among shared behaviors.
+	rules adapter.Rules
 }
 
 type statusRecorder struct {
@@ -204,6 +206,7 @@ func (h *Handler) connection(ctx context.Context, id string) (*connection, adapt
 		SCIMConnection: conn,
 		baseURL:        BaseURL(h.serverURL),
 		patchRules:     a.PatchRules(),
+		rules:          a.Rules(),
 	}, hints, nil
 }
 
@@ -266,8 +269,13 @@ func (h *Handler) route(w http.ResponseWriter, r *request) {
 		case http.MethodPatch:
 			h.patchUser(w, r, rest[0])
 		case http.MethodDelete:
-			// Identity providers deprovision users by setting active to false. Deleting a user is an Obot action. The
-			// adapter's hint replaces the detail for an identity provider that must be set up not to send a DELETE.
+			if r.conn.rules.DeletesUsers {
+				h.deleteUser(w, r, rest[0])
+				return
+			}
+			// Unless the adapter's rules delete users, identity providers deprovision users by setting active to false,
+			// and deleting a user is an Obot action. The adapter's hint replaces the detail for an identity provider
+			// that must be set up not to send a DELETE.
 			writeError(w, &Error{
 				Status: http.StatusNotImplemented,
 				Detail: "deleting users is not supported; deprovision a user by setting active to false",
@@ -532,7 +540,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *request) {
 		}
 	}
 
-	groups, total, err := h.gateway.ListSCIMGroups(r.Context(), r.conn.ID, filter, gclient.SCIMPage{
+	groups, total, err := h.gateway.ListSCIMGroups(r.Context(), r.conn.SCIMConnection, filter, gclient.SCIMPage{
 		Offset: startIndex - 1,
 		Limit:  count,
 	}, proj.includes("members"))
@@ -590,7 +598,7 @@ func (h *Handler) getGroup(w http.ResponseWriter, r *request, id string) {
 		return
 	}
 
-	group, err := h.gateway.GetSCIMGroup(r.Context(), r.conn.ID, id, proj.includes("members"))
+	group, err := h.gateway.GetSCIMGroup(r.Context(), r.conn.SCIMConnection, id, proj.includes("members"))
 	if err != nil {
 		writeError(w, toError(err))
 		return
@@ -631,7 +639,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *request, id string) {
 		writeError(w, toError(err))
 		return
 	}
-	group, err := h.gateway.GetSCIMGroup(r.Context(), r.conn.ID, id, proj.includes("members"))
+	group, err := h.gateway.GetSCIMGroup(r.Context(), r.conn.SCIMConnection, id, proj.includes("members"))
 	if err != nil {
 		writeError(w, toError(err))
 		return
@@ -692,7 +700,7 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *request, id string) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	group, err := h.gateway.GetSCIMGroup(r.Context(), r.conn.ID, id, proj.includes("members"))
+	group, err := h.gateway.GetSCIMGroup(r.Context(), r.conn.SCIMConnection, id, proj.includes("members"))
 	if err != nil {
 		writeError(w, toError(err))
 		return
@@ -708,6 +716,18 @@ func (h *Handler) deleteGroup(w http.ResponseWriter, r *request, id string) {
 		writeError(w, toError(err))
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DELETE /scim/v2/Users/{id}
+// Deletes a provisioned user and what they own, for an identity provider whose adapter's rules delete users.
+func (h *Handler) deleteUser(w http.ResponseWriter, r *request, id string) {
+	userID, err := h.gateway.DeleteSCIMUser(r.Context(), r.conn.SCIMConnection, id)
+	if err != nil {
+		writeError(w, toError(err))
+		return
+	}
+	slog.Info("Deleted user through SCIM", "connection", r.conn.ID, "scimID", id, "userID", userID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

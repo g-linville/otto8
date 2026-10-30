@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"time"
 	"uuid"
 
@@ -437,6 +438,22 @@ func lockSCIMWrites(tx *gorm.DB) error {
 	}
 	if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", scimWriteLockID).Error; err != nil {
 		return fmt.Errorf("failed to lock SCIM writes: %w", err)
+	}
+	return nil
+}
+
+// lockSCIMPersonTx serializes, for the rest of the transaction, the writes that bind or claim the identity of one
+// person: a SCIM user create and a first sign-in, for an auth provider whose adapter matches users by group lookup ID.
+// Neither can find the other's identity by the key it knows, so without the lock each could create an identity and a
+// user for the same person. SQLite needs no lock, because its single connection already serializes transactions.
+func lockSCIMPersonTx(tx *gorm.DB, namespace, name, groupLookupID string) error {
+	if tx.Name() != "postgres" {
+		return nil
+	}
+	key := fnv.New64a()
+	_, _ = key.Write([]byte(namespace + "/" + name + "/" + groupLookupID))
+	if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", int64(key.Sum64())).Error; err != nil {
+		return fmt.Errorf("failed to lock the identity of a person: %w", err)
 	}
 	return nil
 }

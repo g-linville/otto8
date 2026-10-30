@@ -112,8 +112,8 @@ type SCIMUserBinding struct {
 	ConnectionID string `gorm:"not null;index:idx_scim_user_bindings_native,unique,priority:1,where:retired_at IS NULL;index:idx_scim_user_bindings_user,unique,priority:1,where:retired_at IS NULL;index:idx_scim_user_bindings_user_name,unique,priority:1,where:retired_at IS NULL;index:idx_scim_user_bindings_list,priority:1"`
 	UserID       uint   `gorm:"not null;index:idx_scim_user_bindings_user,unique,priority:2;index"`
 
-	// HashedNativeUserID is the hash of the identity provider's immutable user ID, which is also the hashed provider
-	// user ID of the user's identity.
+	// HashedNativeUserID is the hash of the identity provider's immutable user ID, which the adapter derives from the
+	// externalId. Which identity column it matches depends on the adapter's UserKey.
 	HashedNativeUserID string `gorm:"not null;index:idx_scim_user_bindings_native,unique,priority:2"`
 	// HashedUserName is the hash of the SCIM userName's comparison key, which SCIMUserNameKey returns.
 	HashedUserName string `gorm:"not null;index:idx_scim_user_bindings_user_name,unique,priority:2"`

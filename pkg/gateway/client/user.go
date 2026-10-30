@@ -222,92 +222,113 @@ func (c *Client) UsersIncludeDeleted(ctx context.Context, query types.UserQuery)
 	return c.Users(ctx, query)
 }
 
+// DeleteUser deletes a user as an administrator does: the user is soft-deleted and renamed, their group memberships
+// are removed, and an outbox event removes what they own once the deletion commits. A user that SCIM has provisioned
+// can be deleted only once the identity provider has deprovisioned them.
 func (c *Client) DeleteUser(ctx context.Context, userID string) error {
-	existingUser := new(types.User)
-
-	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := refuseClaudeTagUserMutation(tx, userID); err != nil {
 			return err
 		}
 
+		existingUser := new(types.User)
 		if err := tx.Where("id = ?", userID).First(existingUser).Error; err != nil {
 			return err
 		}
 
-		// A user that SCIM has provisioned can be deleted only once the identity provider has deprovisioned them.
-		// Their SCIM ID is retired, so it answers 404 and userName lookups no longer find them.
+		// The user's SCIM ID is retired, so it answers 404 and userName lookups no longer find them.
 		if err := retireSCIMUserBindingForDeletionTx(tx, existingUser.ID); err != nil {
 			return err
 		}
 
-		// Decrypt user to get original values before soft delete
-		if err := c.decryptUser(ctx, existingUser); err != nil {
-			return fmt.Errorf("failed to decrypt user: %w", err)
-		}
+		return c.deleteUserTx(ctx, tx, existingUser)
+	}); err != nil {
+		return err
+	}
 
-		// Check if we're deleting a user with Owner or Admin role
-		// We filter out empty email users here, because that is the bootstrap user.
-		// Also exclude already soft-deleted users and the current user from the count.
-		if existingUser.Role.HasRole(types2.RoleOwner) {
-			// Can't delete the user if they're an owner and there are no other owners
-			var ownerCount int64
-			if err := tx.Model(new(types.User)).Where("id != ? AND (role & ?) != 0 AND hashed_email != '' AND deleted_at IS NULL",
-				userID,
-				types2.RoleOwner,
-			).Count(&ownerCount).Error; err != nil {
-				return err
-			}
+	c.kickUserLifecycleDelivery()
+	return nil
+}
 
-			if ownerCount == 0 {
-				return new(LastOwnerError)
-			}
-		} else if existingUser.Role.HasRole(types2.RoleAdmin) {
-			// Can't delete the user if they're an admin and there are no other owners or admins
-			var adminCount int64
-			if err := tx.Model(new(types.User)).Where("id != ? AND ((role & ?) != 0 OR (role & ?) != 0) AND hashed_email != '' AND deleted_at IS NULL",
-				userID,
-				types2.RoleOwner,
-				types2.RoleAdmin,
-			).Count(&adminCount).Error; err != nil {
-				return err
-			}
+// deleteUserTx deletes existingUser, which was read in tx and is not decrypted, within tx. It refuses to delete the
+// last Owner, or the last Admin when there is no other Owner, with *LastOwnerError or *LastAdminError. It records the
+// event whose delivery removes what the user owns, so the caller must kick lifecycle delivery after committing.
+func (c *Client) deleteUserTx(ctx context.Context, tx *gorm.DB, existingUser *types.User) error {
+	// Decrypt user to get original values before soft delete
+	if err := c.decryptUser(ctx, existingUser); err != nil {
+		return fmt.Errorf("failed to decrypt user: %w", err)
+	}
 
-			if adminCount == 0 {
-				return new(LastAdminError)
-			}
-		}
-
-		// Soft delete: set timestamp and preserve original values
-		now := time.Now()
-		existingUser.DeletedAt = &now
-		existingUser.OriginalEmail = existingUser.Email
-		existingUser.OriginalUsername = existingUser.Username
-
-		// Clear sensitive data and make fields unique to allow re-signup
-		// Append timestamp to prevent conflicts with new users using same email
-		deletedSuffix := fmt.Sprintf("_deleted_%d", now.Unix())
-		existingUser.Email = existingUser.Email + deletedSuffix
-		existingUser.Username = existingUser.Username + deletedSuffix
-		existingUser.HashedEmail = hash.String(existingUser.Email)
-		existingUser.HashedUsername = hash.String(existingUser.Username)
-
-		// Encrypt the modified user
-		if err := c.encryptUser(ctx, existingUser); err != nil {
-			return fmt.Errorf("failed to encrypt user: %w", err)
-		}
-
-		// Clean up group memberships for the deleted user
-		if err := c.deleteGroupMembershipsForUser(ctx, tx, existingUser.ID); err != nil {
+	// Check if we're deleting a user with Owner or Admin role
+	// We filter out empty email users here, because that is the bootstrap user.
+	// Also exclude already soft-deleted users and the current user from the count.
+	if existingUser.Role.HasRole(types2.RoleOwner) {
+		// Can't delete the user if they're an owner and there are no other owners
+		var ownerCount int64
+		if err := tx.Model(new(types.User)).Where("id != ? AND (role & ?) != 0 AND hashed_email != '' AND deleted_at IS NULL",
+			existingUser.ID,
+			types2.RoleOwner,
+		).Count(&ownerCount).Error; err != nil {
 			return err
 		}
 
-		// Update the user with soft delete fields and modified email/username
-		if err := tx.Omit(types.UserLifecycleColumns...).Save(existingUser).Error; err != nil {
+		if ownerCount == 0 {
+			return new(LastOwnerError)
+		}
+	} else if existingUser.Role.HasRole(types2.RoleAdmin) {
+		// Can't delete the user if they're an admin and there are no other owners or admins
+		var adminCount int64
+		if err := tx.Model(new(types.User)).Where("id != ? AND ((role & ?) != 0 OR (role & ?) != 0) AND hashed_email != '' AND deleted_at IS NULL",
+			existingUser.ID,
+			types2.RoleOwner,
+			types2.RoleAdmin,
+		).Count(&adminCount).Error; err != nil {
 			return err
 		}
 
-		return nil
-	})
+		if adminCount == 0 {
+			return new(LastAdminError)
+		}
+	}
+
+	// Soft delete: set timestamp and preserve original values
+	now := time.Now()
+	existingUser.DeletedAt = &now
+	existingUser.OriginalEmail = existingUser.Email
+	existingUser.OriginalUsername = existingUser.Username
+
+	// Clear sensitive data and make fields unique to allow re-signup
+	// Append timestamp to prevent conflicts with new users using same email
+	deletedSuffix := fmt.Sprintf("_deleted_%d", now.Unix())
+	existingUser.Email = existingUser.Email + deletedSuffix
+	existingUser.Username = existingUser.Username + deletedSuffix
+	existingUser.HashedEmail = hash.String(existingUser.Email)
+	existingUser.HashedUsername = hash.String(existingUser.Username)
+
+	// Encrypt the modified user
+	if err := c.encryptUser(ctx, existingUser); err != nil {
+		return fmt.Errorf("failed to encrypt user: %w", err)
+	}
+
+	// Clean up group memberships for the deleted user
+	if err := c.deleteGroupMembershipsForUser(ctx, tx, existingUser.ID); err != nil {
+		return err
+	}
+
+	// Update the user with soft delete fields and modified email/username
+	if err := tx.Omit(types.UserLifecycleColumns...).Save(existingUser).Error; err != nil {
+		return err
+	}
+
+	// What the user owns lives in the controller store, which cannot share this transaction, so it is removed once
+	// the deletion commits, and until that succeeds.
+	if err := tx.Create(&types.UserLifecycleEvent{
+		UserID: existingUser.ID,
+		Type:   types.UserLifecycleEventDeleted,
+	}).Error; err != nil {
+		return fmt.Errorf("failed to record the deletion event of user %d: %w", existingUser.ID, err)
+	}
+	return nil
 }
 
 func (c *Client) UpdateUser(ctx context.Context, actingUserCanChangeRole bool, updatedUser *types.User, userID string) (*types.User, error) {

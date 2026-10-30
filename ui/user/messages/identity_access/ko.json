@@ -486,6 +486,7 @@
 	"identity_access_users_status_deleted": "삭제됨",
 	"identity_access_users_status_disabled_tooltip": "비활성화된 사용자는 계정, 역할, 데이터를 유지하지만 로그인하거나 자격 증명을 사용할 수 없습니다.",
 	"identity_access_users_status_scim_inactive": "ID 공급자에서 비활성화됨",
+	"identity_access_users_status_scim_deleted": "ID 공급자에서 삭제됨",
 	"identity_access_users_status_scim_unprovisioned": "ID 공급자가 프로비저닝하지 않음",
 	"identity_access_users_still_provisioned": "이 사용자는 ID 공급자에서 아직 활성 상태입니다. Obot에서 삭제하기 전에 그곳에서 할당을 제거하세요.",
 	"identity_access_users_tab": "사용자",

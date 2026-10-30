@@ -486,6 +486,7 @@
 	"identity_access_users_status_deleted": "已删除",
 	"identity_access_users_status_disabled_tooltip": "已禁用的用户仍保留账户、角色和数据，但无法登录或使用其凭据。",
 	"identity_access_users_status_scim_inactive": "已在身份提供商中停用",
+	"identity_access_users_status_scim_deleted": "已在身份提供商中删除",
 	"identity_access_users_status_scim_unprovisioned": "身份提供商尚未预配",
 	"identity_access_users_still_provisioned": "此用户在身份提供商中仍然有效。请先在那里取消分配，再在 Obot 中删除。",
 	"identity_access_users_tab": "用户",

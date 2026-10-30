@@ -486,6 +486,7 @@
 	"identity_access_users_status_deleted": "Deleted",
 	"identity_access_users_status_disabled_tooltip": "Disabled users keep their account, roles, and data, but cannot sign in or use their credentials.",
 	"identity_access_users_status_scim_inactive": "Deactivated in identity provider",
+	"identity_access_users_status_scim_deleted": "Deleted in identity provider",
 	"identity_access_users_status_scim_unprovisioned": "Not provisioned by identity provider",
 	"identity_access_users_still_provisioned": "This user is still active in your identity provider. Remove their assignment there before deleting them in Obot.",
 	"identity_access_users_tab": "Users",

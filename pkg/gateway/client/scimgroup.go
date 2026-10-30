@@ -10,6 +10,7 @@ import (
 	"uuid"
 
 	"github.com/obot-platform/obot/pkg/gateway/types"
+	"github.com/obot-platform/obot/pkg/scim/adapter"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -52,8 +53,8 @@ type SCIMGroup struct {
 	// GroupID is the ID of the Obot group the SCIM group is bound to.
 	GroupID     string
 	DisplayName string
-	// ExternalID is the identity provider's identifier for the group. It is empty until an adapter binds groups by
-	// externalId.
+	// ExternalID is the identity provider's identifier for the group: the native group ID that its Obot ID carries, for
+	// an adapter that binds groups by externalId. It is empty for an adapter that binds groups by name.
 	ExternalID string
 	// Members is nil unless members were requested.
 	Members   []SCIMGroupMember
@@ -82,18 +83,35 @@ type scimGroupRow struct {
 
 // ListSCIMGroups returns the connection's bound groups that match filter, oldest first, and the total number of
 // matches. Groups that SCIM has not bound are never returned.
-func (c *Client) ListSCIMGroups(ctx context.Context, connectionID string, filter SCIMGroupFilter, page SCIMPage, includeMembers bool) ([]SCIMGroup, int64, error) {
+func (c *Client) ListSCIMGroups(ctx context.Context, conn *types.SCIMConnection, filter SCIMGroupFilter, page SCIMPage, includeMembers bool) ([]SCIMGroup, int64, error) {
 	var (
-		groups []SCIMGroup
-		total  int64
+		groups       []SCIMGroup
+		total        int64
+		connectionID = conn.ID
+		groupID      string
 	)
 	if filter.ExternalID != "" {
-		// No adapter binds groups by externalId yet, so no group has one.
-		return nil, 0, nil
+		a, err := connectionAdapter(conn)
+		if err != nil {
+			return nil, 0, err
+		}
+		if a.GroupKey() != adapter.GroupKeyExternalID {
+			// Groups that bind by name have no externalId.
+			return nil, 0, nil
+		}
+		nativeGroupID, err := a.NativeGroupIDFromExternalID(filter.ExternalID)
+		if err != nil {
+			// No group has an externalId that the adapter refuses.
+			return nil, 0, nil
+		}
+		groupID = a.NewGroupID(conn.GroupIDPrefix, "", nativeGroupID)
 	}
 
 	if err := c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		query := scimGroupQuery(tx, connectionID)
+		if groupID != "" {
+			query = query.Where("scim_group_bindings.group_id = ?", groupID)
+		}
 		if filter.ID != "" {
 			query = query.Where("scim_group_bindings.id = ?", filter.ID)
 		}
@@ -132,7 +150,7 @@ func (c *Client) ListSCIMGroups(ctx context.Context, connectionID string, filter
 
 		groups = make([]SCIMGroup, 0, len(rows))
 		for _, row := range rows {
-			groups = append(groups, scimGroupFromRow(row, members, includeMembers))
+			groups = append(groups, scimGroupFromRow(conn, row, members, includeMembers))
 		}
 		return nil
 	}); err != nil {
@@ -143,11 +161,11 @@ func (c *Client) ListSCIMGroups(ctx context.Context, connectionID string, filter
 }
 
 // GetSCIMGroup returns the connection's bound group with the given SCIM ID.
-func (c *Client) GetSCIMGroup(ctx context.Context, connectionID, id string, includeMembers bool) (*SCIMGroup, error) {
+func (c *Client) GetSCIMGroup(ctx context.Context, conn *types.SCIMConnection, id string, includeMembers bool) (*SCIMGroup, error) {
 	var group *SCIMGroup
 	if err := c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var err error
-		group, err = c.scimGroupTx(ctx, tx, connectionID, id, includeMembers, false)
+		group, err = c.scimGroupTx(ctx, tx, conn, id, includeMembers, false)
 		return err
 	}); err != nil {
 		return nil, err
@@ -155,10 +173,12 @@ func (c *Client) GetSCIMGroup(ctx context.Context, connectionID, id string, incl
 	return group, nil
 }
 
-// CreateSCIMGroup binds a pushed group to the one unbound group of the connection's auth provider with the same
-// normalized name, keeping that group's ID, or creates a group when there is none. The pushed members replace the
-// group's memberships in the same transaction: cached members that the identity provider did not push are removed,
-// and members that remain are not touched.
+// CreateSCIMGroup binds a pushed group to an existing group of the connection's auth provider, keeping that group's ID,
+// or creates a group when there is none. An adapter with GroupKeyDisplayName binds to the one unbound group with the
+// same normalized name. An adapter with GroupKeyExternalID binds to the group whose ID the native group ID in the
+// externalId gives, which keeps the IDs that directory synchronization used. The pushed members replace the group's
+// memberships in the same transaction: cached members that the identity provider did not push are removed, and
+// members that remain are not touched.
 func (c *Client) CreateSCIMGroup(ctx context.Context, conn *types.SCIMConnection, input SCIMGroupInput) (*SCIMGroup, error) {
 	a, err := connectionAdapter(conn)
 	if err != nil {
@@ -169,6 +189,13 @@ func (c *Client) CreateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 	if normalized == "" {
 		return nil, &SCIMInvalidValueError{
 			Message: "displayName is required",
+		}
+	}
+
+	var nativeGroupID string
+	if a.GroupKey() == adapter.GroupKeyExternalID {
+		if nativeGroupID, err = a.NativeGroupIDFromExternalID(input.ExternalID); err != nil {
+			return nil, scimAdapterError(err)
 		}
 	}
 
@@ -191,41 +218,19 @@ func (c *Client) CreateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 			return err
 		}
 
-		candidates, err := unboundGroupsNamedTx(tx, conn, normalized)
-		if err != nil {
-			return err
-		}
-
 		binding := &types.SCIMGroupBinding{
 			ID:                    uuid.NewV4().String(),
 			ConnectionID:          conn.ID,
 			NormalizedDisplayName: normalized,
 			Revision:              1,
 		}
-		switch len(candidates) {
-		case 0:
-			binding.GroupID = a.NewGroupID(conn.GroupIDPrefix, binding.ID, "")
-			binding.Origin = types.SCIMGroupBindingOriginCreated
-			if err := tx.Create(&types.Group{
-				ID:                    binding.GroupID,
-				AuthProviderName:      conn.AuthProviderName,
-				AuthProviderNamespace: conn.AuthProviderNamespace,
-				Name:                  input.DisplayName,
-			}).Error; err != nil {
-				return fmt.Errorf("failed to create group: %w", err)
-			}
-		case 1:
-			binding.GroupID = candidates[0].ID
-			binding.Origin = types.SCIMGroupBindingOriginExisting
-			if candidates[0].Name != input.DisplayName {
-				if err := renameGroupTx(tx, binding.GroupID, input.DisplayName); err != nil {
-					return err
-				}
-			}
-		default:
-			return &SCIMConflictError{
-				Message: fmt.Sprintf("%d existing groups are named %q; in Obot, remove the references to all but one of them, and delete the groups that nothing references", len(candidates), input.DisplayName),
-			}
+		if a.GroupKey() == adapter.GroupKeyExternalID {
+			err = bindSCIMGroupByIDTx(tx, conn, binding, a.NewGroupID(conn.GroupIDPrefix, binding.ID, nativeGroupID), input.DisplayName)
+		} else {
+			err = bindSCIMGroupByNameTx(tx, conn, a, binding, input.DisplayName)
+		}
+		if err != nil {
+			return err
 		}
 
 		if err := tx.Create(binding).Error; err != nil {
@@ -251,7 +256,101 @@ func (c *Client) CreateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 	}
 
 	// The group is read once the write lock is released, so that reading its members holds up no other SCIM write.
-	return c.GetSCIMGroup(ctx, conn.ID, bindingID, true)
+	return c.GetSCIMGroup(ctx, conn, bindingID, true)
+}
+
+// bindSCIMGroupByNameTx sets the group of binding to the one unbound group of the connection's auth provider with the
+// binding's normalized name, or to a group it creates when there is none.
+func bindSCIMGroupByNameTx(tx *gorm.DB, conn *types.SCIMConnection, a adapter.Adapter, binding *types.SCIMGroupBinding, displayName string) error {
+	candidates, err := unboundGroupsNamedTx(tx, conn, binding.NormalizedDisplayName)
+	if err != nil {
+		return err
+	}
+
+	switch len(candidates) {
+	case 0:
+		binding.GroupID = a.NewGroupID(conn.GroupIDPrefix, binding.ID, "")
+		return createSCIMGroupTx(tx, conn, binding, displayName)
+	case 1:
+		binding.GroupID = candidates[0].ID
+		binding.Origin = types.SCIMGroupBindingOriginExisting
+		if candidates[0].Name != displayName {
+			return renameGroupTx(tx, binding.GroupID, displayName)
+		}
+		return nil
+	default:
+		return &SCIMConflictError{
+			Message: fmt.Sprintf("%d existing groups are named %q; in Obot, remove the references to all but one of them, and delete the groups that nothing references", len(candidates), displayName),
+		}
+	}
+}
+
+// bindSCIMGroupByIDTx sets the group of binding to the group with groupID, which the externalId gives, renaming it to
+// displayName, or to a group with that ID that it creates when there is none. Such a group may be one that directory
+// synchronization created, or one whose binding a DELETE retired before SCIM was enforced. A group that is bound, or
+// that a deletion has not finished with, is refused, since binding it would hand the identity provider a group that
+// is still in use or still being cleaned up. Those deletions finish on their own, so the identity provider's retry
+// succeeds.
+func bindSCIMGroupByIDTx(tx *gorm.DB, conn *types.SCIMConnection, binding *types.SCIMGroupBinding, groupID, displayName string) error {
+	var bound int64
+	if err := tx.Model(new(types.SCIMGroupBinding)).Where("group_id = ? AND retired_at IS NULL", groupID).Count(&bound).Error; err != nil {
+		return fmt.Errorf("failed to check the binding of group %s: %w", groupID, err)
+	} else if bound > 0 {
+		return &SCIMConflictError{
+			Message: "this group is already provisioned",
+		}
+	}
+
+	var pending int64
+	if err := tx.Model(new(types.SCIMPendingGroupDeletion)).Where("group_id = ?", groupID).Count(&pending).Error; err != nil {
+		return fmt.Errorf("failed to check whether group %s is pending deletion: %w", groupID, err)
+	} else if pending > 0 {
+		return &SCIMConflictError{
+			Message: "Obot is deleting this group because nothing references it; retry once the deletion finishes",
+		}
+	}
+	if err := tx.Model(new(types.SCIMGroupSubjectCleanup)).Where("group_id = ?", groupID).Count(&pending).Error; err != nil {
+		return fmt.Errorf("failed to check the cleanup of group %s: %w", groupID, err)
+	} else if pending > 0 {
+		return &SCIMConflictError{
+			Message: "Obot is still removing this group from access policies after an earlier deletion; retry later",
+		}
+	}
+
+	var groups []types.Group
+	if err := tx.Select("id", "name", "auth_provider_namespace", "auth_provider_name").Where("id = ?", groupID).Limit(1).Find(&groups).Error; err != nil {
+		return fmt.Errorf("failed to get group %s: %w", groupID, err)
+	}
+	binding.GroupID = groupID
+	if len(groups) == 0 {
+		return createSCIMGroupTx(tx, conn, binding, displayName)
+	}
+
+	group := groups[0]
+	if group.AuthProviderNamespace != conn.AuthProviderNamespace || group.AuthProviderName != conn.AuthProviderName {
+		return &SCIMConflictError{
+			Message: fmt.Sprintf("group %s belongs to another auth provider", groupID),
+		}
+	}
+	binding.Origin = types.SCIMGroupBindingOriginExisting
+	if group.Name != displayName {
+		return renameGroupTx(tx, groupID, displayName)
+	}
+	return nil
+}
+
+// createSCIMGroupTx creates the group of binding, of the connection's auth provider.
+func createSCIMGroupTx(tx *gorm.DB, conn *types.SCIMConnection, binding *types.SCIMGroupBinding, displayName string) error {
+	binding.Origin = types.SCIMGroupBindingOriginCreated
+	if err := tx.Create(&types.Group{
+		ID:                    binding.GroupID,
+		AuthProviderName:      conn.AuthProviderName,
+		AuthProviderNamespace: conn.AuthProviderNamespace,
+		Name:                  displayName,
+	}).Error; err != nil {
+		return fmt.Errorf("failed to create group: %w", err)
+	}
+	return nil
 }
 
 // UpdateSCIMGroup changes a bound group's display name and members. The replacement is computed by mutate from the
@@ -265,7 +364,7 @@ func (c *Client) UpdateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 			return err
 		}
 
-		current, err := c.scimGroupTx(ctx, tx, conn.ID, id, true, true)
+		current, err := c.scimGroupTx(ctx, tx, conn, id, true, true)
 		if err != nil {
 			return err
 		}
@@ -336,7 +435,7 @@ func (c *Client) PatchSCIMGroup(ctx context.Context, conn *types.SCIMConnection,
 			return err
 		}
 
-		current, err := c.scimGroupTx(ctx, tx, conn.ID, id, false, true)
+		current, err := c.scimGroupTx(ctx, tx, conn, id, false, true)
 		if err != nil {
 			return err
 		}
@@ -545,8 +644,8 @@ func (c *Client) FailSCIMGroupSubjectCleanup(ctx context.Context, groupID string
 	return nil
 }
 
-func (c *Client) scimGroupTx(ctx context.Context, tx *gorm.DB, connectionID, id string, includeMembers, forUpdate bool) (*SCIMGroup, error) {
-	query := scimGroupQuery(tx, connectionID).Where("scim_group_bindings.id = ?", id)
+func (c *Client) scimGroupTx(ctx context.Context, tx *gorm.DB, conn *types.SCIMConnection, id string, includeMembers, forUpdate bool) (*SCIMGroup, error) {
+	query := scimGroupQuery(tx, conn.ID).Where("scim_group_bindings.id = ?", id)
 	if forUpdate {
 		query = query.Clauses(clause.Locking{
 			Strength: "UPDATE",
@@ -570,12 +669,12 @@ func (c *Client) scimGroupTx(ctx context.Context, tx *gorm.DB, connectionID, id 
 	var members map[string][]SCIMGroupMember
 	if includeMembers {
 		var err error
-		if members, err = c.scimGroupMembersTx(ctx, tx, connectionID, []string{rows[0].GroupID}); err != nil {
+		if members, err = c.scimGroupMembersTx(ctx, tx, conn.ID, []string{rows[0].GroupID}); err != nil {
 			return nil, err
 		}
 	}
 
-	group := scimGroupFromRow(rows[0], members, includeMembers)
+	group := scimGroupFromRow(conn, rows[0], members, includeMembers)
 	return &group, nil
 }
 
@@ -876,11 +975,12 @@ func scimGroupQuery(tx *gorm.DB, connectionID string) *gorm.DB {
 		Where("scim_group_bindings.connection_id = ? AND scim_group_bindings.retired_at IS NULL", connectionID)
 }
 
-func scimGroupFromRow(row scimGroupRow, members map[string][]SCIMGroupMember, includeMembers bool) SCIMGroup {
+func scimGroupFromRow(conn *types.SCIMConnection, row scimGroupRow, members map[string][]SCIMGroupMember, includeMembers bool) SCIMGroup {
 	group := SCIMGroup{
 		ID:          row.ID,
 		GroupID:     row.GroupID,
 		DisplayName: row.Name,
+		ExternalID:  scimGroupExternalID(conn, row.GroupID),
 		Revision:    row.Revision,
 		CreatedAt:   row.CreatedAt,
 		UpdatedAt:   row.UpdatedAt,
@@ -892,4 +992,14 @@ func scimGroupFromRow(row scimGroupRow, members map[string][]SCIMGroupMember, in
 		}
 	}
 	return group
+}
+
+// scimGroupExternalID returns the externalId of the group with the given Obot ID: the native group ID that the ID
+// carries, for a connection whose adapter binds groups by externalId, and nothing otherwise.
+func scimGroupExternalID(conn *types.SCIMConnection, groupID string) string {
+	a, ok := adapter.Lookup(conn.AdapterType)
+	if !ok || a.GroupKey() != adapter.GroupKeyExternalID {
+		return ""
+	}
+	return a.NativeGroupID(conn.GroupIDPrefix, groupID)
 }

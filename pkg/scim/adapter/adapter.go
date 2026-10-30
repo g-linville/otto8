@@ -7,6 +7,9 @@
 package adapter
 
 const (
+	// pendingProviderUserIDPrefix starts the provider user ID of an identity that waits for its first sign-in.
+	pendingProviderUserIDPrefix = "OBOT_SCIM_PENDING/"
+
 	// UserKeyProviderUserID matches the identity's hashed provider user ID, which sign-in keys identities by.
 	UserKeyProviderUserID UserKey = 0
 	// UserKeyGroupLookupID matches the identity's hashed group lookup ID, for an identity provider whose sign-in
@@ -77,7 +80,8 @@ type Adapter interface {
 	NativeGroupIDFromExternalID(externalID string) (string, error)
 
 	// NewGroupID returns the Obot ID for a group that SCIM creates. nativeGroupID is the native group ID that
-	// NativeGroupIDFromExternalID returned, for GroupKeyExternalID, and empty otherwise.
+	// NativeGroupIDFromExternalID returned, for GroupKeyExternalID, and empty otherwise. For GroupKeyExternalID, the
+	// ID depends on nativeGroupID alone, so that a pushed group's ID can be found from its externalId.
 	NewGroupID(groupIDPrefix, scimID, nativeGroupID string) string
 
 	// NativeGroupID returns the identity provider's own ID of the group with the given Obot ID, or an empty string
@@ -185,6 +189,13 @@ func (e *InvalidUserError) Error() string {
 
 func (e *InvalidGroupError) Error() string {
 	return e.Message
+}
+
+// PendingProviderUserID returns the provider user ID of an identity that SCIM creates for an adapter with
+// UserKeyGroupLookupID, whose sign-in subject SCIM does not know. The user's first sign-in finds the identity by it, and
+// replaces it with the subject.
+func PendingProviderUserID(nativeUserID string) string {
+	return pendingProviderUserIDPrefix + nativeUserID
 }
 
 // ForAuthProvider returns the adapter of the named auth provider, and whether the provider supports SCIM.

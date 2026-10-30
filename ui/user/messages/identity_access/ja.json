@@ -486,6 +486,7 @@
 	"identity_access_users_status_deleted": "削除済み",
 	"identity_access_users_status_disabled_tooltip": "無効なユーザーはアカウント、ロール、データを保持しますが、サインインしたり資格情報を使ったりできません。",
 	"identity_access_users_status_scim_inactive": "ID プロバイダーで無効化済み",
+	"identity_access_users_status_scim_deleted": "ID プロバイダーで削除済み",
 	"identity_access_users_status_scim_unprovisioned": "ID プロバイダーでプロビジョニングされていません",
 	"identity_access_users_still_provisioned": "このユーザーは ID プロバイダーでまだ有効です。Obot で削除する前に、そちらで割り当てを解除してください。",
 	"identity_access_users_tab": "ユーザー",
