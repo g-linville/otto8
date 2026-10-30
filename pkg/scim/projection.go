@@ -1,6 +1,7 @@
 package scim
 
 import (
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -21,6 +22,15 @@ type projection struct {
 }
 
 func parseProjection(schema *resourceSchema, q url.Values) (*projection, error) {
+	// RFC 7644 section 3.9 makes the two parameters mutually exclusive. No scimType of section 3.12 is about query
+	// parameters, so the error has none.
+	if strings.TrimSpace(q.Get("attributes")) != "" && strings.TrimSpace(q.Get("excludedAttributes")) != "" {
+		return nil, &Error{
+			Status: http.StatusBadRequest,
+			Detail: "attributes and excludedAttributes cannot be used together",
+		}
+	}
+
 	attributes, err := parseAttributeList(schema, q.Get("attributes"))
 	if err != nil {
 		return nil, err
@@ -112,6 +122,7 @@ func (p *projection) apply(resource map[string]any) map[string]any {
 			"id":      resource["id"],
 			"schemas": resource["schemas"],
 		}
+		var bySub []attrPath
 		for _, a := range p.attributes {
 			from := attributesOf(resource, a.URN)
 			v, ok := from[a.Name]
@@ -131,6 +142,20 @@ func (p *projection) apply(resource map[string]any) map[string]any {
 				continue
 			}
 			to[a.Name] = mergeSubAttribute(to[a.Name], v, a.Sub)
+			bySub = append(bySub, a)
+		}
+		// A value without the selected sub-attributes is left out, rather than returned empty, and so is an attribute
+		// or extension object that is left with nothing.
+		for _, a := range bySub {
+			to := attributesOf(out, a.URN)
+			if v, ok := withoutEmptyValues(to[a.Name]); ok {
+				to[a.Name] = v
+				continue
+			}
+			delete(to, a.Name)
+			if a.URN != "" && len(to) == 0 {
+				delete(out, a.URN)
+			}
 		}
 		return p.withoutAbsentExtensions(out)
 	}
@@ -156,6 +181,17 @@ func (p *projection) apply(resource map[string]any) map[string]any {
 					delete(m, e.Sub)
 				}
 			}
+		default:
+			continue
+		}
+		// As when attributes are selected, nothing is returned empty.
+		if v, ok := withoutEmptyValues(from[e.Name]); ok {
+			from[e.Name] = v
+			continue
+		}
+		delete(from, e.Name)
+		if e.URN != "" && len(from) == 0 {
+			delete(resource, e.URN)
 		}
 	}
 	return p.withoutAbsentExtensions(resource)
@@ -188,6 +224,24 @@ func attributesOf(resource map[string]any, urn string) map[string]any {
 	}
 	m, _ := resource[urn].(map[string]any)
 	return m
+}
+
+// withoutEmptyValues returns a complex or multi-valued complex attribute without its empty values, and reports false
+// when nothing is left.
+func withoutEmptyValues(value any) (any, bool) {
+	switch v := value.(type) {
+	case map[string]any:
+		return v, len(v) > 0
+	case []any:
+		kept := make([]any, 0, len(v))
+		for _, item := range v {
+			if m, ok := item.(map[string]any); !ok || len(m) > 0 {
+				kept = append(kept, item)
+			}
+		}
+		return kept, len(kept) > 0
+	}
+	return value, true
 }
 
 // mergeSubAttribute adds the sub-attribute of value, a complex or multi-valued complex attribute, to projected.

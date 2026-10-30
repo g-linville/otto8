@@ -142,12 +142,14 @@ type SCIMUserBinding struct {
 type SCIMGroupBinding struct {
 	// ID is the server-issued SCIM group ID.
 	ID           string `gorm:"primaryKey"`
-	ConnectionID string `gorm:"not null;index:idx_scim_group_bindings_name,unique,priority:1,where:retired_at IS NULL;index"`
+	ConnectionID string `gorm:"not null;index:idx_scim_group_bindings_name,unique,priority:1,where:retired_at IS NULL;index;index:idx_scim_group_bindings_external_id,priority:1,where:retired_at IS NULL"`
 	// GroupID is the ID of the Obot group, which never changes.
 	GroupID string `gorm:"not null;index:idx_scim_group_bindings_group,unique,where:retired_at IS NULL;index"`
 	// NormalizedDisplayName is the trimmed, case-folded display name.
 	NormalizedDisplayName string                 `gorm:"not null;index:idx_scim_group_bindings_name,unique,priority:2"`
 	Origin                SCIMGroupBindingOrigin `gorm:"not null"`
+	// ExternalID is the group's externalId as the identity provider last sent it, which is empty when it sent none.
+	ExternalID string `gorm:"not null;default:'';index:idx_scim_group_bindings_external_id,priority:2"`
 
 	// Revision counts the changes to the group and its memberships made through SCIM.
 	Revision  int64 `gorm:"not null;default:0"`

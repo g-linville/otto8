@@ -47,6 +47,12 @@ func TestUserDeleteDeletesTheUserWhenTheAdapterDeletesUsers(t *testing.T) {
 	// The SCIM ID is retired, which the identity provider treats as done.
 	s.do(http.MethodGet, "Users/"+user.id(), nil).expect(t, http.StatusNotFound)
 	s.do(http.MethodDelete, "Users/"+user.id(), nil).expect(t, http.StatusNotFound)
+
+	// A user's methods include DELETE.
+	resp := s.do(http.MethodPost, "Users/anything", map[string]any{}).expect(t, http.StatusMethodNotAllowed)
+	if allow := resp.header.Get("Allow"); allow != "GET, PUT, PATCH, DELETE" {
+		t.Errorf("Allow = %q", allow)
+	}
 }
 
 func TestGroupsEchoAndFindTheirExternalID(t *testing.T) {
@@ -71,4 +77,66 @@ func TestGroupsEchoAndFindTheirExternalID(t *testing.T) {
 
 	// A group without an externalId is refused.
 	s.do(http.MethodPost, "Groups", scimGroup("other")).expect(t, http.StatusBadRequest)
+}
+
+func TestGroupExternalIDCannotChangeWhenGroupsBindByIt(t *testing.T) {
+	s := newSCIMTest(t)
+	s.enableLookupProvider()
+
+	body := scimGroup("team")
+	body["externalId"] = "g-1"
+	created := s.do(http.MethodPost, "Groups", body).expect(t, http.StatusCreated)
+
+	tests := []struct {
+		name   string
+		method string
+		body   any
+	}{
+		{
+			name:   "a PATCH that replaces it",
+			method: http.MethodPatch,
+			body: patchOp(map[string]any{
+				"op":    "replace",
+				"path":  "externalId",
+				"value": "g-2",
+			}),
+		},
+		{
+			name:   "a PATCH that removes it",
+			method: http.MethodPatch,
+			body: patchOp(map[string]any{
+				"op":   "remove",
+				"path": "externalId",
+			}),
+		},
+		{
+			name:   "a PUT with another one",
+			method: http.MethodPut,
+			body: map[string]any{
+				"schemas":     []any{groupSchema},
+				"displayName": "team",
+				"externalId":  "g-9",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := s.do(tt.method, "Groups/"+created.id(), tt.body).expect(t, http.StatusBadRequest)
+			if resp.body["scimType"] != scimTypeMutability {
+				t.Fatalf("scimType = %v, want %s", resp.body["scimType"], scimTypeMutability)
+			}
+		})
+	}
+	if got := s.do(http.MethodGet, "Groups/"+created.id(), nil).expect(t, http.StatusOK).body["externalId"]; got != "g-1" {
+		t.Fatalf("externalId = %v, want g-1", got)
+	}
+
+	// Restating it, or omitting it from a PUT, changes nothing.
+	s.do(http.MethodPut, "Groups/"+created.id(), body).expect(t, http.StatusOK)
+	s.do(http.MethodPut, "Groups/"+created.id(), scimGroup("team")).expect(t, http.StatusOK)
+	s.do(http.MethodPatch, "Groups/"+created.id(), patchOp(map[string]any{
+		"op":    "replace",
+		"path":  "externalId",
+		"value": "g-1",
+	})).expect(t, http.StatusNoContent)
 }

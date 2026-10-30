@@ -146,8 +146,10 @@ var (
 					referenceAttribute("$ref", "The URI of the SCIM resource representing the User's manager.", "User"),
 					stringAttribute("displayName", "The displayName of the User's manager.", readOnly),
 				},
-				// Microsoft Entra ID sends the manager's ID alone, as a string.
+				// Microsoft Entra ID sends the manager's ID alone, as a string. Microsoft's SCIM documentation also
+				// shows it sending the manager as a list of one object, although it is single-valued.
 				stringIsValue: true,
+				listOfOne:     true,
 			},
 		},
 		extension: true,
@@ -270,6 +272,9 @@ type attribute struct {
 	// stringIsValue is set for a complex attribute that also accepts a string, which stands for an object with that
 	// value sub-attribute.
 	stringIsValue bool
+	// listOfOne is set for a single-valued complex attribute that also accepts a list of one value, which stands for
+	// that value.
+	listOfOne bool
 }
 
 func stringAttribute(name, description string, opts ...func(*attribute)) *attribute {

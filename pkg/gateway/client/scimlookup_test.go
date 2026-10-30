@@ -393,6 +393,7 @@ func TestDeleteSCIMUserRefusesTheLastOwnerAndAdmin(t *testing.T) {
 			_, err = c.DeleteSCIMUser(t.Context(), conn, provisioned.ID)
 			var conflict *SCIMConflictError
 			require.ErrorAs(t, err, &conflict)
+			require.True(t, conflict.NotUniqueness)
 
 			// Nothing changed.
 			user := storedLifecycleUser(t, c, provisioned.UserID)
@@ -454,26 +455,25 @@ func TestSCIMGroupsBindByExternalID(t *testing.T) {
 	require.Equal(t, "g-1", group.ExternalID)
 	require.Equal(t, "Team", group.DisplayName)
 
-	// It is found by its externalId, as the adapter normalizes it.
-	for _, externalID := range []string{"g-1", " g-1 "} {
-		found, total, err := c.ListSCIMGroups(ctx, conn, SCIMGroupFilter{
+	// It is found by its externalId, exactly as it was sent, since externalId is case exact.
+	found, total, err := c.ListSCIMGroups(ctx, conn, SCIMGroupFilter{
+		ExternalID: "g-1",
+	}, SCIMPage{
+		Limit: 10,
+	}, false)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total)
+	require.Equal(t, group.ID, found[0].ID)
+	require.Equal(t, "g-1", found[0].ExternalID)
+	for _, externalID := range []string{" g-1 ", "G-1", "g-other"} {
+		_, total, err := c.ListSCIMGroups(ctx, conn, SCIMGroupFilter{
 			ExternalID: externalID,
 		}, SCIMPage{
 			Limit: 10,
 		}, false)
 		require.NoError(t, err)
-		require.EqualValues(t, 1, total)
-		require.Equal(t, group.ID, found[0].ID)
-		require.Equal(t, "g-1", found[0].ExternalID)
+		require.Zero(t, total, externalID)
 	}
-	found, total, err := c.ListSCIMGroups(ctx, conn, SCIMGroupFilter{
-		ExternalID: "g-other",
-	}, SCIMPage{
-		Limit: 10,
-	}, false)
-	require.NoError(t, err)
-	require.Zero(t, total)
-	require.Empty(t, found)
 
 	// Pushing the same group again is a conflict.
 	_, err = c.CreateSCIMGroup(ctx, conn, SCIMGroupInput{
@@ -598,7 +598,7 @@ func TestSCIMGroupsByExternalIDWaitForDeletionsAndRefuseOtherProviders(t *testin
 	}
 }
 
-func TestOktaGroupsHaveNoExternalID(t *testing.T) {
+func TestOktaGroupsKeepTheirExternalID(t *testing.T) {
 	c := newLifecycleTestClient(t)
 	conn, _ := createTestSCIMConnection(t, c, false)
 
@@ -607,7 +607,7 @@ func TestOktaGroupsHaveNoExternalID(t *testing.T) {
 		ExternalID:  "00g1a2b3c4d5e6f7g8h9",
 	})
 	require.NoError(t, err)
-	require.Empty(t, group.ExternalID)
+	require.Equal(t, "00g1a2b3c4d5e6f7g8h9", group.ExternalID)
 
 	found, total, err := c.ListSCIMGroups(t.Context(), conn, SCIMGroupFilter{
 		ExternalID: "00g1a2b3c4d5e6f7g8h9",
@@ -615,8 +615,25 @@ func TestOktaGroupsHaveNoExternalID(t *testing.T) {
 		Limit: 10,
 	}, false)
 	require.NoError(t, err)
-	require.Zero(t, total)
-	require.Empty(t, found)
+	require.EqualValues(t, 1, total)
+	require.Equal(t, group.ID, found[0].ID)
+
+	// Okta groups bind by name, so their externalId can change, and an update without one removes it.
+	require.NoError(t, c.PatchSCIMGroup(t.Context(), conn, group.ID, SCIMGroupPatch{
+		ExternalID: "00g-other",
+	}))
+	got, err := c.GetSCIMGroup(t.Context(), conn, group.ID, false)
+	require.NoError(t, err)
+	require.Equal(t, "00g-other", got.ExternalID)
+
+	require.NoError(t, c.UpdateSCIMGroup(t.Context(), conn, group.ID, func(current SCIMGroup) (SCIMGroupInput, error) {
+		return SCIMGroupInput{
+			DisplayName: current.DisplayName,
+		}, nil
+	}))
+	got, err = c.GetSCIMGroup(t.Context(), conn, group.ID, false)
+	require.NoError(t, err)
+	require.Empty(t, got.ExternalID)
 }
 
 // clearGroupLookupID makes the identity of the lookup test provider with the given provider user ID look like one

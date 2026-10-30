@@ -95,6 +95,9 @@ type SCIMNotFoundError struct {
 // SCIMConflictError reports a SCIM write that conflicts with an existing resource.
 type SCIMConflictError struct {
 	Message string
+	// NotUniqueness is set for a conflict with the state of Obot rather than with attribute values that are already
+	// in use, which is what RFC 7644's uniqueness error means. Its response has no scimType.
+	NotUniqueness bool
 }
 
 // SCIMInvalidValueError reports a SCIM write whose values cannot be applied.
@@ -104,7 +107,9 @@ type SCIMInvalidValueError struct {
 
 // SCIMMutabilityError reports a SCIM write that changes an attribute that cannot change.
 type SCIMMutabilityError struct {
-	// Attribute names the SCIM attribute that cannot change, so that the SCIM endpoint can explain the change.
+	// Resource and Attribute name the SCIM attribute that cannot change, so that the SCIM endpoint can explain the
+	// change.
+	Resource  types.SCIMResourceType
 	Attribute string
 	Message   string
 }
@@ -194,6 +199,21 @@ func (c *Client) ListSCIMUsers(ctx context.Context, conn *types.SCIMConnection, 
 
 		if err := query.Count(&total).Error; err != nil {
 			return fmt.Errorf("failed to count SCIM users: %w", err)
+		}
+		if hashedNativeUserID != "" && total > 0 {
+			// The native user ID identifies at most one user. The adapter can derive it from externalIds other than
+			// the user's, such as one with surrounding space, but externalId is case exact, so the user matches only
+			// when theirs is the one filtered for.
+			var binding types.SCIMUserBinding
+			if err := query.Take(&binding).Error; err != nil {
+				return fmt.Errorf("failed to get SCIM user: %w", err)
+			}
+			if err := c.decryptSCIMUserBinding(ctx, &binding); err != nil {
+				return err
+			}
+			if binding.ExternalID != filter.ExternalID {
+				total = 0
+			}
 		}
 		if page.Limit <= 0 || int64(page.Offset) >= total {
 			return nil
@@ -433,6 +453,7 @@ func (c *Client) UpdateSCIMUser(ctx context.Context, conn *types.SCIMConnection,
 		}
 		if hash.String(nativeUserID) != binding.HashedNativeUserID {
 			return &SCIMMutabilityError{
+				Resource:  types.SCIMResourceTypeUser,
 				Attribute: "externalId",
 				Message:   "externalId identifies the user and cannot change",
 			}
@@ -558,12 +579,14 @@ func (c *Client) DeleteSCIMUser(ctx context.Context, conn *types.SCIMConnection,
 		}
 		if _, ok := errors.AsType[*LastOwnerError](err); ok {
 			return &SCIMConflictError{
-				Message: "this user is Obot's last owner; make another user an owner in Obot before deleting them in the identity provider",
+				Message:       "this user is Obot's last owner; make another user an owner in Obot before deleting them in the identity provider",
+				NotUniqueness: true,
 			}
 		}
 		if _, ok := errors.AsType[*LastAdminError](err); ok {
 			return &SCIMConflictError{
-				Message: "this user is Obot's last admin; make another user an admin in Obot before deleting them in the identity provider",
+				Message:       "this user is Obot's last admin; make another user an admin in Obot before deleting them in the identity provider",
+				NotUniqueness: true,
 			}
 		}
 		return err

@@ -282,6 +282,10 @@ func (h *Handler) route(w http.ResponseWriter, r *request) {
 				hint:   hintUserDelete,
 			})
 		default:
+			if r.conn.rules.DeletesUsers {
+				methodNotAllowed(w, http.MethodGet, http.MethodPut, http.MethodPatch, http.MethodDelete)
+				return
+			}
 			methodNotAllowed(w, http.MethodGet, http.MethodPut, http.MethodPatch)
 		}
 	case strings.EqualFold(resource, "Groups") && len(rest) == 0:
@@ -630,9 +634,11 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *request, id string) {
 	}
 
 	// The replacement does not depend on the current members, so it is applied without reading them, and the response
-	// reads them once the write is committed, only if it includes them.
+	// reads them once the write is committed, only if it includes them. Like a user's, a group's externalId is kept
+	// when the replacement omits it, as RFC 7644 section 3.5.1 allows.
 	if err := h.gateway.PatchSCIMGroup(r.Context(), r.conn.SCIMConnection, id, gclient.SCIMGroupPatch{
 		DisplayName:    input.DisplayName,
+		ExternalID:     input.ExternalID,
 		ReplaceMembers: true,
 		MemberIDs:      input.MemberIDs,
 	}); err != nil {
@@ -748,6 +754,12 @@ func toError(err error) *Error {
 		}
 	}
 	if e, ok := errors.AsType[*gclient.SCIMConflictError](err); ok {
+		if e.NotUniqueness {
+			return &Error{
+				Status: http.StatusConflict,
+				Detail: e.Message,
+			}
+		}
 		return conflict(e.Message)
 	}
 	if e, ok := errors.AsType[*gclient.SCIMInvalidValueError](err); ok {
@@ -755,7 +767,7 @@ func toError(err error) *Error {
 	}
 	if e, ok := errors.AsType[*gclient.SCIMMutabilityError](err); ok {
 		mutability := badRequest(scimTypeMutability, "%s", e.Message)
-		if e.Attribute == "externalId" {
+		if e.Resource == types.SCIMResourceTypeUser && e.Attribute == "externalId" {
 			mutability.hint = hintExternalIDChanged
 		}
 		return mutability

@@ -671,8 +671,11 @@ func TestWriteResponsesAreProjected(t *testing.T) {
 		})
 	}
 
-	// An invalid projection is refused before anything is written.
+	// An invalid projection is refused before anything is written, and so is one that both selects and excludes
+	// attributes, which RFC 7644 section 3.9 makes mutually exclusive.
 	s.do(http.MethodPost, "Users?attributes="+url.QueryEscape("not an attribute"), scimUser("third@example.com", "00u-third")).expect(t, http.StatusBadRequest)
+	s.do(http.MethodPost, "Users?attributes=userName&excludedAttributes=emails", scimUser("third@example.com", "00u-third")).expect(t, http.StatusBadRequest)
+	s.do(http.MethodGet, "Users?attributes=userName&excludedAttributes=emails", nil).expect(t, http.StatusBadRequest)
 	if n := s.count(new(types.SCIMUserBinding), ""); n != 2 {
 		t.Fatalf("got %d users, want 2", n)
 	}
@@ -1040,6 +1043,83 @@ func TestProjectionsListOnlyTheExtensionsTheyReturn(t *testing.T) {
 	}
 }
 
+// TestProjectionsReturnNothingEmpty checks that a projection leaves out the values that lack the sub-attributes it
+// selects or that it excludes all of, rather than returning them empty.
+func TestProjectionsReturnNothingEmpty(t *testing.T) {
+	s := newSCIMTest(t)
+	s.enable()
+
+	body := scimUser("user@example.com", "00u-user")
+	body["addresses"] = []any{
+		map[string]any{
+			"type": "work",
+		},
+		map[string]any{
+			"type":    "home",
+			"country": "US",
+		},
+	}
+	body[enterpriseUserSchema] = map[string]any{
+		"manager": map[string]any{
+			"$ref": "https://example.com/scim/Users/manager-1",
+		},
+	}
+	user := s.do(http.MethodPost, "Users", body).expect(t, http.StatusCreated).id()
+
+	tests := []struct {
+		name  string
+		query string
+		want  map[string]any
+	}{
+		{
+			name:  "a sub-attribute that no value has",
+			query: "attributes=" + url.QueryEscape(enterpriseUserSchema+":manager.value,name.middleName"),
+			want: map[string]any{
+				"id":      user,
+				"schemas": []any{userSchema},
+			},
+		},
+		{
+			name:  "a sub-attribute that only some values have",
+			query: "attributes=addresses.country",
+			want: map[string]any{
+				"id":      user,
+				"schemas": []any{userSchema},
+				"addresses": []any{
+					map[string]any{
+						"country": "US",
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := s.do(http.MethodGet, "Users/"+user+"?"+tt.query, nil).expect(t, http.StatusOK).body
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("projected = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+
+	// Excluding all the sub-attributes that some values have leaves them out too.
+	got := s.do(http.MethodGet, "Users/"+user+"?excludedAttributes="+url.QueryEscape("addresses.type,"+enterpriseUserSchema+":manager.$ref"), nil).expect(t, http.StatusOK).body
+	wantAddresses := []any{
+		map[string]any{
+			"country": "US",
+		},
+	}
+	if !reflect.DeepEqual(got["addresses"], wantAddresses) {
+		t.Errorf("addresses = %#v, want %#v", got["addresses"], wantAddresses)
+	}
+	if _, ok := got[enterpriseUserSchema]; ok {
+		t.Errorf("%s = %#v, want none", enterpriseUserSchema, got[enterpriseUserSchema])
+	}
+	if want := []any{userSchema}; !reflect.DeepEqual(got["schemas"], want) {
+		t.Errorf("schemas = %#v, want %#v", got["schemas"], want)
+	}
+}
+
 func TestExternalIDFilters(t *testing.T) {
 	s := newSCIMTest(t)
 	s.enable()
@@ -1058,9 +1138,8 @@ func TestExternalIDFilters(t *testing.T) {
 			wantIDs: []string{user},
 		},
 		{
-			name:    "matches the externalId as the adapter normalizes it",
-			filter:  `externalId eq " 00u-user "`,
-			wantIDs: []string{user},
+			name:   "matches only the externalId as it was sent, which is case exact",
+			filter: `externalId eq " 00u-user "`,
 		},
 		{
 			name:   "matches no other externalId",
@@ -1094,12 +1173,44 @@ func TestExternalIDFilters(t *testing.T) {
 		t.Fatalf("an inactive user's externalId found %v, want the user", found)
 	}
 
-	// A group's externalId is accepted. Okta groups bind by name, so no group matches it.
+	// Okta groups bind by name, and their externalId is kept and returned as it was sent, and matched exactly.
 	group := scimGroup("team", user)
 	group["externalId"] = "00g-team"
-	s.do(http.MethodPost, "Groups", group).expect(t, http.StatusCreated)
-	if found := s.do(http.MethodGet, "Groups?filter="+url.QueryEscape(`externalId eq "00g-team"`), nil).expect(t, http.StatusOK).resources(); len(found) != 0 {
-		t.Fatalf("externalId eq found %v, want none", found)
+	created := s.do(http.MethodPost, "Groups", group).expect(t, http.StatusCreated)
+	if created.body["externalId"] != "00g-team" {
+		t.Fatalf("externalId = %v, want 00g-team", created.body["externalId"])
+	}
+	findGroups := func(externalID string) []map[string]any {
+		t.Helper()
+		return s.do(http.MethodGet, "Groups?filter="+url.QueryEscape(`externalId eq "`+externalID+`"`), nil).expect(t, http.StatusOK).resources()
+	}
+	if found := findGroups("00g-team"); len(found) != 1 || found[0]["id"] != created.id() {
+		t.Fatalf("externalId eq found %v, want the group", found)
+	}
+	if found := findGroups("00G-TEAM"); len(found) != 0 {
+		t.Fatalf("externalId eq in another case found %v, want none", found)
+	}
+
+	// It is readWrite, so a PATCH changes it, and a PUT that omits it keeps it.
+	s.do(http.MethodPatch, "Groups/"+created.id(), patchOp(map[string]any{
+		"op":    "replace",
+		"path":  "externalId",
+		"value": "00g-renamed",
+	})).expect(t, http.StatusNoContent)
+	s.do(http.MethodPut, "Groups/"+created.id(), scimGroup("team", user)).expect(t, http.StatusOK)
+	if got := s.do(http.MethodGet, "Groups/"+created.id(), nil).expect(t, http.StatusOK).body["externalId"]; got != "00g-renamed" {
+		t.Fatalf("externalId = %v, want 00g-renamed", got)
+	}
+	if found := findGroups("00g-team"); len(found) != 0 {
+		t.Fatalf("the old externalId found %v, want none", found)
+	}
+
+	s.do(http.MethodPatch, "Groups/"+created.id(), patchOp(map[string]any{
+		"op":   "remove",
+		"path": "externalId",
+	})).expect(t, http.StatusNoContent)
+	if got, ok := s.do(http.MethodGet, "Groups/"+created.id(), nil).expect(t, http.StatusOK).body["externalId"]; ok {
+		t.Fatalf("externalId = %v, want none", got)
 	}
 }
 

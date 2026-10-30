@@ -184,6 +184,32 @@ func TestApplyPatchUser(t *testing.T) {
 			},
 		},
 		{
+			name: "pathless schemas that name the enterprise extension before its attributes apply are ignored",
+			ops:  `[{"op":"replace","value":{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User","urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"],"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User":{"department":"Sales"}}}]`,
+			want: map[string]any{
+				enterpriseUserSchema: map[string]any{
+					"department": "Sales",
+				},
+			},
+		},
+		{
+			name: "schemas in another order and case are ignored",
+			ops:  `[{"op":"replace","path":"schemas","value":["URN:IETF:PARAMS:SCIM:SCHEMAS:EXTENSION:ENTERPRISE:2.0:USER","urn:ietf:params:scim:schemas:core:2.0:User"]}]`,
+			want: map[string]any{
+				"schemas": []any{userSchema},
+			},
+		},
+		{
+			name:         "schemas that name another schema are refused",
+			ops:          `[{"op":"replace","value":{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User","urn:example:custom"],"nickName":"Nick"}}]`,
+			wantScimType: scimTypeMutability,
+		},
+		{
+			name:         "removing schemas is refused",
+			ops:          `[{"op":"remove","path":"schemas"}]`,
+			wantScimType: scimTypeMutability,
+		},
+		{
 			name:         "a pathless change to a read-only attribute is refused",
 			ops:          `[{"op":"replace","value":{"id":"other","nickName":"Nick"}}]`,
 			wantScimType: scimTypeMutability,
@@ -721,6 +747,32 @@ func TestApplyPatchUserAddressesAndEnterpriseExtension(t *testing.T) {
 			}),
 		},
 		{
+			name: "pathless schemas without the extension, which the user has, are ignored",
+			ops:  `[{"op":"replace","value":{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"title":"Engineer"}}]`,
+			want: withChanges(map[string]any{
+				"title": "Engineer",
+			}),
+		},
+		{
+			name:  "replaces the manager with a list of one object, as Microsoft's SCIM documentation shows Entra sending it",
+			ops:   `[{"op":"Add","path":"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager","value":[{"$ref":"https://example.com/scim/Users/manager-5","value":"manager-5"}]}]`,
+			rules: entra,
+			want: withChanges(map[string]any{
+				enterpriseUserSchema: map[string]any{
+					"department": "Engineering",
+					"manager": map[string]any{
+						"value": "manager-5",
+						"$ref":  "https://example.com/scim/Users/manager-5",
+					},
+				},
+			}),
+		},
+		{
+			name:         "a manager list of more than one is refused",
+			ops:          `[{"op":"Replace","path":"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager","value":[{"value":"manager-5"},{"value":"manager-6"}]}]`,
+			wantScimType: scimTypeInvalidValue,
+		},
+		{
 			name: "replaces a sub-attribute of the manager",
 			ops:  `[{"op":"Replace","path":"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager.value","value":"manager-4"}]`,
 			want: withChanges(map[string]any{
@@ -1210,4 +1262,89 @@ func decodeTestOperations(t *testing.T, ops string) []patchOperation {
 		t.Fatalf("failed to decode operations: %v", err)
 	}
 	return decoded
+}
+
+func TestApplyPatchManagerRef(t *testing.T) {
+	const (
+		manager = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager"
+		ref1    = "https://example.com/scim/Users/manager-1"
+	)
+	tests := []struct {
+		name string
+		ops  string
+		want map[string]any
+	}{
+		{
+			name: "a new manager ID alone drops the old manager's $ref",
+			ops:  `[{"op":"Replace","path":"` + manager + `","value":["manager-6"]}]`,
+			want: map[string]any{
+				"value": "manager-6",
+			},
+		},
+		{
+			name: "a new manager.value drops the old manager's $ref",
+			ops:  `[{"op":"Replace","path":"` + manager + `.value","value":"manager-7"}]`,
+			want: map[string]any{
+				"value": "manager-7",
+			},
+		},
+		{
+			name: "a $ref set in the same request is kept",
+			ops:  `[{"op":"Replace","path":"` + manager + `.$ref","value":"https://example.com/scim/Users/manager-8"},{"op":"Replace","path":"` + manager + `.value","value":"manager-8"}]`,
+			want: map[string]any{
+				"value": "manager-8",
+				"$ref":  "https://example.com/scim/Users/manager-8",
+			},
+		},
+		{
+			name: "restating the manager's ID keeps its $ref",
+			ops:  `[{"op":"Replace","path":"` + manager + `","value":"manager-1"}]`,
+			want: map[string]any{
+				"value": "manager-1",
+				"$ref":  ref1,
+			},
+		},
+		{
+			name: "a manager ID that differs only in case keeps its $ref",
+			ops:  `[{"op":"Replace","path":"` + manager + `","value":"MANAGER-1"}]`,
+			want: map[string]any{
+				"value": "MANAGER-1",
+				"$ref":  ref1,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resource := testExtendedUserResource()
+			resource[enterpriseUserSchema] = map[string]any{
+				"manager": map[string]any{
+					"value": "manager-1",
+					"$ref":  ref1,
+				},
+			}
+			if err := applyPatch(userResourceSchema, resource, decodeTestOperations(t, tt.ops), adapter.PatchRules{}); err != nil {
+				t.Fatalf("applyPatch() error = %v", err)
+			}
+			got, _ := resource[enterpriseUserSchema].(map[string]any)
+			if !reflect.DeepEqual(got["manager"], tt.want) {
+				t.Fatalf("manager = %#v, want %#v", got["manager"], tt.want)
+			}
+		})
+	}
+
+	// Removing the manager's ID removes its $ref, and so the manager.
+	resource := testExtendedUserResource()
+	resource[enterpriseUserSchema] = map[string]any{
+		"department": "Engineering",
+		"manager": map[string]any{
+			"value": "manager-1",
+			"$ref":  ref1,
+		},
+	}
+	if err := applyPatch(userResourceSchema, resource, decodeTestOperations(t, `[{"op":"Remove","path":"`+manager+`.value"}]`), adapter.PatchRules{}); err != nil {
+		t.Fatalf("applyPatch() error = %v", err)
+	}
+	if want := map[string]any{"department": "Engineering"}; !reflect.DeepEqual(resource[enterpriseUserSchema], want) {
+		t.Fatalf("%s = %#v, want %#v", enterpriseUserSchema, resource[enterpriseUserSchema], want)
+	}
 }

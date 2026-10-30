@@ -54,6 +54,15 @@ type valueSet struct {
 	others  []map[string]any
 }
 
+// singleReference is the value and $ref of a single-valued reference, such as the enterprise extension's manager,
+// before a PATCH applies.
+type singleReference struct {
+	urn   string
+	attr  *attribute
+	value any
+	ref   any
+}
+
 // decodePatchOperations reads the operations of a PatchOp request. Member names are case-insensitive.
 func decodePatchOperations(body map[string]any) ([]patchOperation, error) {
 	if schemas, ok := lookupKey(body, "schemas").([]any); ok && !containsFold(schemas, patchOpSchema) {
@@ -100,12 +109,59 @@ func decodePatchOperations(body map[string]any) ([]patchOperation, error) {
 // unless rules, the client's, say otherwise. The caller validates the result and commits it once, so a failed
 // operation leaves nothing applied.
 func applyPatch(schema *resourceSchema, resource map[string]any, ops []patchOperation, rules adapter.PatchRules) error {
+	refs := singleReferences(schema, resource)
 	for _, op := range ops {
 		if err := applyOperation(schema, resource, op, rules); err != nil {
 			return err
 		}
 	}
+	dropStaleRefs(resource, refs)
 	return nil
+}
+
+// singleReferences returns the single-valued references of the schema and its extensions, as the resource holds them.
+func singleReferences(schema *resourceSchema, resource map[string]any) []singleReference {
+	var refs []singleReference
+	collect := func(s *resourceSchema, urn string) {
+		for _, attr := range s.Attributes {
+			if attr.MultiValued || !identifiedByValue(attr) {
+				continue
+			}
+			current, _ := attributesOf(resource, urn)[attr.Name].(map[string]any)
+			refs = append(refs, singleReference{
+				urn:   urn,
+				attr:  attr,
+				value: current["value"],
+				ref:   current["$ref"],
+			})
+		}
+	}
+	collect(schema, "")
+	for _, ext := range schema.extensions {
+		collect(ext, ext.ID)
+	}
+	return refs
+}
+
+// dropStaleRefs removes the $ref of each single-valued reference whose value the PATCH changed or removed without
+// changing its $ref. The $ref is the URI of the resource the value identifies, so it would otherwise point at the one
+// the value used to identify. A $ref that the PATCH set is kept.
+func dropStaleRefs(resource map[string]any, refs []singleReference) {
+	for _, r := range refs {
+		holder := attributesOf(resource, r.urn)
+		current, _ := holder[r.attr.Name].(map[string]any)
+		if current == nil || !reflect.DeepEqual(current["$ref"], r.ref) || subValuesEqual(r.attr.subAttribute("value"), current["value"], r.value) {
+			continue
+		}
+		delete(current, "$ref")
+		if len(current) > 0 {
+			continue
+		}
+		delete(holder, r.attr.Name)
+		if r.urn != "" && len(holder) == 0 {
+			delete(resource, r.urn)
+		}
+	}
 }
 
 func applyOperation(schema *resourceSchema, resource map[string]any, op patchOperation, rules adapter.PatchRules) error {
@@ -232,6 +288,12 @@ func applyToTarget(schema *resourceSchema, resource map[string]any, op, target s
 	if value == nil && op == patchAdd && attr.MultiValued && path.Attr.Sub == "" && path.Sub == "" {
 		return nil
 	}
+	// The server derives schemas from the attributes the resource has, as RFC 7643 section 3 says, so a client cannot
+	// know which extensions it lists before the other changes apply. A value that names only the resource's own
+	// schemas, as when a client echoes them, changes nothing, whatever their order and whichever extensions it names.
+	if attr.Name == "schemas" && op != patchRemove && path.Filter == nil && path.Attr.Sub == "" && ownSchemas(schema, value) {
+		return nil
+	}
 	if attr.Mutability == mutabilityReadOnly {
 		if op != patchRemove && path.Filter == nil && path.Attr.Sub == "" && unchanged(resource, attr, value) {
 			return nil
@@ -289,6 +351,22 @@ func alreadyHeld(resource map[string]any, attr *attribute, value any) bool {
 			continue
 		}
 		if !slices.ContainsFunc(existing, func(e any) bool { return sameValue(attr, e, v) }) {
+			return false
+		}
+	}
+	return true
+}
+
+// ownSchemas reports whether value names only the schema's URN and the URNs of its extensions, which are compared
+// case-insensitively.
+func ownSchemas(schema *resourceSchema, value any) bool {
+	urns, ok := value.([]any)
+	if !ok {
+		urns = []any{value}
+	}
+	for _, urn := range urns {
+		s, ok := urn.(string)
+		if !ok || !strings.EqualFold(s, schema.ID) && schema.extensionSchema(s) == nil {
 			return false
 		}
 	}

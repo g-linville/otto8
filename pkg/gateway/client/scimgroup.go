@@ -46,6 +46,8 @@ type SCIMGroupInput struct {
 type SCIMGroupPatch struct {
 	// DisplayName renames the group unless it is empty.
 	DisplayName string
+	// ExternalID changes the group's externalId unless it is empty.
+	ExternalID string
 	// ReplaceMembers makes MemberIDs the complete member set. Otherwise, the users in MemberIDs are added, those in
 	// RemovedMemberIDs are removed, and other members are not touched. All are SCIM user IDs.
 	ReplaceMembers   bool
@@ -59,8 +61,8 @@ type SCIMGroup struct {
 	// GroupID is the ID of the Obot group the SCIM group is bound to.
 	GroupID     string
 	DisplayName string
-	// ExternalID is the identity provider's identifier for the group: the native group ID that its Obot ID carries, for
-	// an adapter that binds groups by externalId. It is empty for an adapter that binds groups by name.
+	// ExternalID is the identity provider's identifier for the group, as it last sent it. For an adapter that binds
+	// groups by externalId, it holds the native group ID that the group's Obot ID carries.
 	ExternalID string
 	// Members is nil unless members were requested.
 	Members   []SCIMGroupMember
@@ -94,27 +96,13 @@ func (c *Client) ListSCIMGroups(ctx context.Context, conn *types.SCIMConnection,
 		groups       []SCIMGroup
 		total        int64
 		connectionID = conn.ID
-		groupID      string
 	)
-	if filter.ExternalID != "" {
-		a, err := connectionAdapter(conn)
-		if err != nil {
-			return nil, 0, err
-		}
-		if a.GroupKey() != adapter.GroupKeyExternalID {
-			// Groups that bind by name have no externalId.
-			return nil, 0, nil
-		}
-		if groupID, err = groupIDFromExternalID(a, conn, filter.ExternalID); err != nil {
-			// No group has an externalId that cannot identify a group.
-			return nil, 0, nil
-		}
-	}
 
 	if err := c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		query := scimGroupQuery(tx, connectionID)
-		if groupID != "" {
-			query = query.Where("scim_group_bindings.group_id = ?", groupID)
+		if filter.ExternalID != "" {
+			// externalId is case exact, so it matches only the string the identity provider sent.
+			query = query.Where("scim_group_bindings.external_id = ?", filter.ExternalID)
 		}
 		if filter.ID != "" {
 			query = query.Where("scim_group_bindings.id = ?", filter.ID)
@@ -154,7 +142,7 @@ func (c *Client) ListSCIMGroups(ctx context.Context, conn *types.SCIMConnection,
 
 		groups = make([]SCIMGroup, 0, len(rows))
 		for _, row := range rows {
-			groups = append(groups, scimGroupFromRow(conn, row, members, includeMembers))
+			groups = append(groups, scimGroupFromRow(row, members, includeMembers))
 		}
 		return nil
 	}); err != nil {
@@ -227,6 +215,7 @@ func (c *Client) CreateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 			ID:                    uuid.NewV4().String(),
 			ConnectionID:          conn.ID,
 			NormalizedDisplayName: normalized,
+			ExternalID:            input.ExternalID,
 			Revision:              1,
 		}
 		if a.GroupKey() == adapter.GroupKeyExternalID {
@@ -358,11 +347,17 @@ func createSCIMGroupTx(tx *gorm.DB, conn *types.SCIMConnection, binding *types.S
 	return nil
 }
 
-// UpdateSCIMGroup changes a bound group's display name and members. The replacement is computed by mutate from the
-// group's current state, with its members, inside the transaction that writes it. A replacement identical to the
-// current state changes nothing and emits nothing. A replacement that does not depend on the current state is a
-// PatchSCIMGroup that replaces the members, which reads none of them.
+// UpdateSCIMGroup changes a bound group's display name, externalId, and members. The replacement is computed by mutate
+// from the group's current state, with its members, inside the transaction that writes it, and an empty externalId in
+// it removes the group's. A replacement identical to the current state changes nothing and emits nothing. A
+// replacement that does not depend on the current state is a PatchSCIMGroup that replaces the members, which reads
+// none of them.
 func (c *Client) UpdateSCIMGroup(ctx context.Context, conn *types.SCIMConnection, id string, mutate func(current SCIMGroup) (SCIMGroupInput, error)) error {
+	a, err := connectionAdapter(conn)
+	if err != nil {
+		return err
+	}
+
 	var changed bool
 	if err := c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockSCIMWrites(tx); err != nil {
@@ -385,6 +380,10 @@ func (c *Client) UpdateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 				Message: "displayName is required",
 			}
 		}
+		if err := checkSCIMGroupExternalID(a, conn, current, input.ExternalID); err != nil {
+			return err
+		}
+		externalIDChanged := input.ExternalID != current.ExternalID
 
 		members, err := resolveSCIMMembersTx(tx, conn.ID, input.MemberIDs)
 		if err != nil {
@@ -410,9 +409,10 @@ func (c *Client) UpdateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 		}
 		changed = len(changes) > 0
 
-		if renamed || changed {
+		if renamed || externalIDChanged || changed {
 			if err := tx.Model(new(types.SCIMGroupBinding)).Where("id = ?", id).UpdateColumns(map[string]any{
 				"normalized_display_name": normalized,
+				"external_id":             input.ExternalID,
 				"revision":                gorm.Expr("revision + 1"),
 				"updated_at":              time.Now(),
 			}).Error; err != nil {
@@ -434,6 +434,11 @@ func (c *Client) UpdateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 // and removing members reads and writes only the memberships of the users the patch names, and replacing them reads
 // only the user IDs of the group's memberships. A patch that changes nothing emits nothing.
 func (c *Client) PatchSCIMGroup(ctx context.Context, conn *types.SCIMConnection, id string, patch SCIMGroupPatch) error {
+	a, err := connectionAdapter(conn)
+	if err != nil {
+		return err
+	}
+
 	var changed bool
 	if err := c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockSCIMWrites(tx); err != nil {
@@ -457,6 +462,13 @@ func (c *Client) PatchSCIMGroup(ctx context.Context, conn *types.SCIMConnection,
 				return err
 			}
 			if err := renameGroupTx(tx, current.GroupID, patch.DisplayName); err != nil {
+				return err
+			}
+		}
+
+		externalIDChanged := patch.ExternalID != "" && patch.ExternalID != current.ExternalID
+		if externalIDChanged {
+			if err := checkSCIMGroupExternalID(a, conn, current, patch.ExternalID); err != nil {
 				return err
 			}
 		}
@@ -488,7 +500,7 @@ func (c *Client) PatchSCIMGroup(ctx context.Context, conn *types.SCIMConnection,
 		}
 		changed = len(changes) > 0
 
-		if !renamed && !changed {
+		if !renamed && !externalIDChanged && !changed {
 			return nil
 		}
 		columns := map[string]any{
@@ -497,6 +509,9 @@ func (c *Client) PatchSCIMGroup(ctx context.Context, conn *types.SCIMConnection,
 		}
 		if renamed {
 			columns["normalized_display_name"] = types.NormalizeSCIMGroupName(patch.DisplayName)
+		}
+		if externalIDChanged {
+			columns["external_id"] = patch.ExternalID
 		}
 		if err := tx.Model(new(types.SCIMGroupBinding)).Where("id = ?", id).UpdateColumns(columns).Error; err != nil {
 			return fmt.Errorf("failed to update SCIM group binding: %w", err)
@@ -679,7 +694,7 @@ func (c *Client) scimGroupTx(ctx context.Context, tx *gorm.DB, conn *types.SCIMC
 		}
 	}
 
-	group := scimGroupFromRow(conn, rows[0], members, includeMembers)
+	group := scimGroupFromRow(rows[0], members, includeMembers)
 	return &group, nil
 }
 
@@ -980,12 +995,12 @@ func scimGroupQuery(tx *gorm.DB, connectionID string) *gorm.DB {
 		Where("scim_group_bindings.connection_id = ? AND scim_group_bindings.retired_at IS NULL", connectionID)
 }
 
-func scimGroupFromRow(conn *types.SCIMConnection, row scimGroupRow, members map[string][]SCIMGroupMember, includeMembers bool) SCIMGroup {
+func scimGroupFromRow(row scimGroupRow, members map[string][]SCIMGroupMember, includeMembers bool) SCIMGroup {
 	group := SCIMGroup{
 		ID:          row.ID,
 		GroupID:     row.GroupID,
 		DisplayName: row.Name,
-		ExternalID:  scimGroupExternalID(conn, row.GroupID),
+		ExternalID:  row.ExternalID,
 		Revision:    row.Revision,
 		CreatedAt:   row.CreatedAt,
 		UpdatedAt:   row.UpdatedAt,
@@ -1024,12 +1039,22 @@ func groupIDFromExternalID(a adapter.Adapter, conn *types.SCIMConnection, extern
 	return groupID, nil
 }
 
-// scimGroupExternalID returns the externalId of the group with the given Obot ID: the native group ID that the ID
-// carries, for a connection whose adapter binds groups by externalId, and nothing otherwise.
-func scimGroupExternalID(conn *types.SCIMConnection, groupID string) string {
-	a, ok := adapter.Lookup(conn.AdapterType)
-	if !ok || a.GroupKey() != adapter.GroupKeyExternalID {
-		return ""
+// checkSCIMGroupExternalID refuses to give a group bound by its externalId, for an adapter with GroupKeyExternalID, an
+// externalId that identifies another group, or none, as RFC 7644 section 3.5.1 says of attributes that cannot change.
+// An externalId that holds the same native group ID is accepted. Groups bound by name keep no identity in their
+// externalId, so it can change as any readWrite attribute can.
+func checkSCIMGroupExternalID(a adapter.Adapter, conn *types.SCIMConnection, current *SCIMGroup, externalID string) error {
+	if a.GroupKey() != adapter.GroupKeyExternalID || externalID == current.ExternalID {
+		return nil
 	}
-	return a.NativeGroupID(conn.GroupIDPrefix, groupID)
+	if externalID != "" {
+		if groupID, err := groupIDFromExternalID(a, conn, externalID); err == nil && groupID == current.GroupID {
+			return nil
+		}
+	}
+	return &SCIMMutabilityError{
+		Resource:  types.SCIMResourceTypeGroup,
+		Attribute: "externalId",
+		Message:   "externalId identifies the group and cannot change",
+	}
 }

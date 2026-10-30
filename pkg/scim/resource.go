@@ -253,6 +253,9 @@ func canonicalList(attr *attribute, value any) ([]any, error) {
 func canonicalSingle(attr *attribute, value any) (any, error) {
 	switch attr.Type {
 	case typeComplex:
+		if items, isList := value.([]any); isList && len(items) == 1 && attr.listOfOne {
+			value = items[0]
+		}
 		m, ok := value.(map[string]any)
 		if s, isString := value.(string); isString && attr.stringIsValue {
 			m, ok = map[string]any{"value": s}, true
