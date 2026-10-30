@@ -1,6 +1,10 @@
 {
   "scim_no_provider": "未配置身份验证提供商。",
   "scim_unsupported": "{provider} 不支持 SCIM 预配。",
+  "scim_identities_preparing": "Obot 仍在为 SCIM 预配准备身份。请几分钟后重试。",
+  "scim_users_must_sign_in": "由于 Obot 未记录以下 {provider} 用户的 ID，SCIM 无法将他们与其 Obot 帐户匹配，会将他们预配为新用户（{count} 位）：{users}。在启用 SCIM 之前，每位用户都必须在浏览器中登录 Obot 以记录该 ID，或在 Obot 中被删除。",
+  "scim_disabled_users_must_be_enabled": "其中已禁用的用户：{count} 位。已禁用的用户在管理员于 Obot 中启用他们之前无法登录。",
+  "scim_more_users": "，以及另外 {count} 位",
   "scim_switch_staged": "切换到 {provider} 的操作已暂存。请先完成或放弃该操作。",
   "scim_change_in_progress": "正在更改身份验证提供商配置。请等待操作完成。",
   "scim_already_provisions": "{provider} 已通过 SCIM 预配用户和用户组。",

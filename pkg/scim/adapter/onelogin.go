@@ -115,6 +115,18 @@ func (oneLogin) UserKey() UserKey {
 	return UserKeyProviderUserID
 }
 
+// NativeUserIDFromExternalID requires the numeric OneLogin user ID. The userName that NativeUserID also requires
+// cannot change the ID it returns.
+func (oneLogin) NativeUserIDFromExternalID(externalID string) (string, error) {
+	id := strings.TrimSpace(externalID)
+	if !isOneLoginID(id) {
+		return "", &InvalidUserError{
+			Message: "externalId must be the numeric OneLogin user ID",
+		}
+	}
+	return id, nil
+}
+
 func (oneLogin) NewUserIdentity(nativeUserID string) Identity {
 	return Identity{
 		Username:              nativeUserID,

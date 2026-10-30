@@ -9,6 +9,7 @@ import (
 	"github.com/obot-platform/obot/pkg/gateway/types"
 	"github.com/obot-platform/obot/pkg/hash"
 	"github.com/obot-platform/obot/pkg/scim/adapter"
+	"github.com/obot-platform/obot/pkg/scim/adapter/adaptertest"
 	v1 "github.com/obot-platform/obot/pkg/storage/apis/obot.obot.ai/v1"
 	storagescheme "github.com/obot-platform/obot/pkg/storage/scheme"
 	"github.com/obot-platform/obot/pkg/system"
@@ -20,7 +21,7 @@ import (
 // at once, for an adapter that matches users by group lookup ID. Neither can find the other's identity by the key it
 // knows, so only the lock they share keeps them from creating two users.
 func TestSignInAndSCIMCreateOfOnePersonMakeOneUserOnPostgres(t *testing.T) {
-	adapter.RegisterForTest(t, lookupTestProviderName, adapter.TestAdapter{
+	adapter.RegisterForTest(t, lookupTestProviderName, adaptertest.Adapter{
 		Users:  adapter.UserKeyGroupLookupID,
 		Groups: adapter.GroupKeyExternalID,
 	})
@@ -35,6 +36,7 @@ func TestSignInAndSCIMCreateOfOnePersonMakeOneUserOnPostgres(t *testing.T) {
 			},
 		}).
 		Build()
+	require.NoError(t, c.BackfillIdentityGroupLookupIDHashes(t.Context()))
 	stub := newLookupIDStub(t)
 	conn := createLookupTestConnection(t, c)
 
@@ -65,7 +67,7 @@ func TestSignInAndSCIMCreateOfOnePersonMakeOneUserOnPostgres(t *testing.T) {
 		require.Equal(t, signedIn.ID, provisioned.UserID, objectID)
 
 		// One identity remains: the one sign-in created, or the one SCIM created, claimed.
-		require.EqualValues(t, 1, rowCount(t, c, new(types.Identity), "hashed_provider_group_lookup_id = ?", hash.String(objectID)), objectID)
-		require.EqualValues(t, 1, rowCount(t, c, new(types.Identity), "hashed_provider_user_id = ?", hash.String(sub)), objectID)
+		require.EqualValues(t, 1, countRows(t, c, new(types.Identity), "hashed_provider_group_lookup_id = ?", hash.String(objectID)), objectID)
+		require.EqualValues(t, 1, countRows(t, c, new(types.Identity), "hashed_provider_user_id = ?", hash.String(sub)), objectID)
 	}
 }

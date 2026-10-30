@@ -72,8 +72,12 @@ func (okta) IssuerConfigurationParameter() string {
 	return "OBOT_OKTA_AUTH_PROVIDER_ISSUER_URL"
 }
 
-func (okta) NativeUserID(user User) (string, error) {
-	id := strings.TrimSpace(user.ExternalID)
+func (o okta) NativeUserID(user User) (string, error) {
+	return o.NativeUserIDFromExternalID(user.ExternalID)
+}
+
+func (okta) NativeUserIDFromExternalID(externalID string) (string, error) {
+	id := strings.TrimSpace(externalID)
 	switch {
 	case id == "":
 		return "", &InvalidUserError{

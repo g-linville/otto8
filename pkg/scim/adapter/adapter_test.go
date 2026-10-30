@@ -48,18 +48,6 @@ func (choiceWithDirectoryAdapter) DirectoryParameters() []DirectoryParameter {
 	return oktaDirectoryParameters
 }
 
-// registerChoiceAdapter registers choiceAdapter for choiceAuthProviderName until the test ends.
-func registerChoiceAdapter(t *testing.T) {
-	t.Helper()
-
-	byAuthProvider[choiceAuthProviderName] = choiceAdapter{}
-	byType[choiceAdapterType] = choiceAdapter{}
-	t.Cleanup(func() {
-		delete(byAuthProvider, choiceAuthProviderName)
-		delete(byType, choiceAdapterType)
-	})
-}
-
 // choiceManifest returns a manifest of a provider with a SCIM choice parameter.
 func choiceManifest() types2.AuthProviderManifest {
 	return types2.AuthProviderManifest{
@@ -110,7 +98,7 @@ func TestOktaAndOneLoginKeepTheSharedBehavior(t *testing.T) {
 }
 
 func TestSCIMChosen(t *testing.T) {
-	registerChoiceAdapter(t)
+	RegisterForTest(t, choiceAuthProviderName, choiceAdapter{})
 	okta, _ := ForAuthProvider(oktaAuthProviderName)
 	choice, _ := ForAuthProvider(choiceAuthProviderName)
 
@@ -174,7 +162,7 @@ func TestSCIMChosen(t *testing.T) {
 }
 
 func TestEffectiveParametersWithAChoiceParameter(t *testing.T) {
-	registerChoiceAdapter(t)
+	RegisterForTest(t, choiceAuthProviderName, choiceAdapter{})
 	hiddenChoice := types2.ProviderConfigurationParameter{
 		Name:        choiceParameterName,
 		Description: choiceDescription,
@@ -270,12 +258,7 @@ func TestEffectiveParametersWithAChoiceParameter(t *testing.T) {
 
 func TestEffectiveParametersDropBothTheChoiceAndUnusedDirectoryParameters(t *testing.T) {
 	// An adapter with both is not expected, but neither list replaces the other.
-	byAuthProvider[choiceAuthProviderName] = choiceWithDirectoryAdapter{}
-	byType[choiceAdapterType] = choiceWithDirectoryAdapter{}
-	t.Cleanup(func() {
-		delete(byAuthProvider, choiceAuthProviderName)
-		delete(byType, choiceAdapterType)
-	})
+	RegisterForTest(t, choiceAuthProviderName, choiceWithDirectoryAdapter{})
 
 	manifest := oktaManifest()
 	params := EffectiveParameters(manifest, ProviderState{
@@ -294,7 +277,7 @@ func TestEffectiveParametersDropBothTheChoiceAndUnusedDirectoryParameters(t *tes
 }
 
 func TestLocalizedChoiceDescription(t *testing.T) {
-	registerChoiceAdapter(t)
+	RegisterForTest(t, choiceAuthProviderName, choiceAdapter{})
 	tests := []struct {
 		name           string
 		parameterName  string
@@ -339,6 +322,51 @@ func TestLocalizedChoiceDescription(t *testing.T) {
 			got, recognized := LocalizedDirectoryDescription(choiceAuthProviderName, tt.parameterName, tt.description, tt.locale)
 			if got != tt.want || recognized != tt.wantRecognized {
 				t.Fatalf("LocalizedDirectoryDescription() = %q, %v, want %q, %v", got, recognized, tt.want, tt.wantRecognized)
+			}
+		})
+	}
+}
+
+func TestNativeUserIDFromExternalID(t *testing.T) {
+	tests := []struct {
+		name             string
+		authProviderName string
+		externalID       string
+		want             string
+		wantErr          bool
+	}{
+		{
+			name:             "an Okta user ID",
+			authProviderName: oktaAuthProviderName,
+			externalID:       " 00u1a2b3c4d5e6f7g8h9 ",
+			want:             "00u1a2b3c4d5e6f7g8h9",
+		},
+		{
+			name:             "an Okta externalId with a space",
+			authProviderName: oktaAuthProviderName,
+			externalID:       "not an id",
+			wantErr:          true,
+		},
+		{
+			name:             "a OneLogin user ID, whatever the userName",
+			authProviderName: oneLoginAuthProviderName,
+			externalID:       "263801284",
+			want:             "263801284",
+		},
+		{
+			name:             "a OneLogin externalId that is not a user ID",
+			authProviderName: oneLoginAuthProviderName,
+			externalID:       "user@example.com",
+			wantErr:          true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, _ := ForAuthProvider(tt.authProviderName)
+			got, err := a.NativeUserIDFromExternalID(tt.externalID)
+			var invalid *InvalidUserError
+			if tt.wantErr != errors.As(err, &invalid) || got != tt.want {
+				t.Fatalf("NativeUserIDFromExternalID(%q) = %q, %v", tt.externalID, got, err)
 			}
 		})
 	}

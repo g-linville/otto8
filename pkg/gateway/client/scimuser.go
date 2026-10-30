@@ -171,13 +171,8 @@ func (c *Client) ListSCIMUsers(ctx context.Context, conn *types.SCIMConnection, 
 		if err != nil {
 			return nil, 0, err
 		}
-		// A bound user's native ID is the one the adapter derives from their externalId. The filter names no
-		// userName, so the externalId stands in for it, which an adapter that requires the two to match, as OneLogin's
-		// does, accepts.
-		nativeUserID, err := a.NativeUserID(adapter.User{
-			UserName:   filter.ExternalID,
-			ExternalID: filter.ExternalID,
-		})
+		// A bound user's native ID is the one the adapter derives from their externalId.
+		nativeUserID, err := a.NativeUserIDFromExternalID(filter.ExternalID)
 		if err != nil {
 			// No user has an externalId that the adapter refuses.
 			return nil, 0, nil
@@ -557,7 +552,10 @@ func (c *Client) DeleteSCIMUser(ctx context.Context, conn *types.SCIMConnection,
 			return fmt.Errorf("failed to retire the SCIM binding of user %d: %w", userID, err)
 		}
 
-		err = c.deleteUserTx(ctx, tx, user)
+		err = refuseLastOwnerOrAdminTx(tx, user)
+		if err == nil {
+			err = c.deleteUserTx(ctx, tx, user)
+		}
 		if _, ok := errors.AsType[*LastOwnerError](err); ok {
 			return &SCIMConflictError{
 				Message: "this user is Obot's last owner; make another user an owner in Obot before deleting them in the identity provider",
@@ -641,10 +639,27 @@ func (c *Client) bindOrCreateSCIMUserTx(ctx context.Context, tx *gorm.DB, conn *
 			}
 		}
 	}
-	// Every identity's user was deleted, so provisioning starts a new account, which the identities move to. Nothing
-	// is inherited.
+	// No live user has an identity for the native ID, so provisioning starts a new account. The identities of deleted
+	// users, if any, move to it, and nothing else is inherited.
 
 	names := a.NewUserIdentity(nativeUserID)
+	if a.UserKey() == adapter.UserKeyGroupLookupID {
+		// An identity that a sign-in created keeps the subject it was signed in with, so the new account gets the
+		// username that sign-in gives, as it would if the person signed in first. With several such identities, the
+		// first by key sets it. A username that another user has fails the create below as a conflict.
+		pendingKey := hash.String(adapter.PendingProviderUserID(nativeUserID))
+		for i := range identities {
+			if identities[i].HashedProviderUserID == pendingKey {
+				continue
+			}
+			identity := identities[i]
+			if err := c.decryptStoredIdentity(ctx, &identity); err != nil {
+				return 0, false, err
+			}
+			names.Username = identity.ProviderUsername
+			break
+		}
+	}
 	if names.Username == system.BootstrapName {
 		return 0, false, &SCIMInvalidValueError{
 			Message: fmt.Sprintf("%q is reserved and cannot identify a user", names.Username),
@@ -786,7 +801,7 @@ func (c *Client) projectSCIMProfileTx(ctx context.Context, tx *gorm.DB, userID u
 	}
 	// Every encrypted column is written, so that the row stays consistent with its encrypted flag.
 	if err := tx.Model(user).
-		Select("email", "hashed_email", "display_name", "username", "icon_url", "original_email", "original_username", "encrypted").
+		Select(slices.Concat(userEncryptedColumns, []string{"hashed_email"})).
 		Updates(user).Error; err != nil {
 		return fmt.Errorf("failed to update the profile of user %d: %w", userID, err)
 	}

@@ -1,7 +1,6 @@
 package client
 
 import (
-	"crypto/aes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,13 +16,11 @@ import (
 	"github.com/obot-platform/obot/pkg/gateway/types"
 	"github.com/obot-platform/obot/pkg/hash"
 	"github.com/obot-platform/obot/pkg/scim/adapter"
+	"github.com/obot-platform/obot/pkg/scim/adapter/adaptertest"
 	v1 "github.com/obot-platform/obot/pkg/storage/apis/obot.obot.ai/v1"
 	"github.com/obot-platform/obot/pkg/system"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/server/options/encryptionconfig"
-	"k8s.io/apiserver/pkg/storage/value"
-	encryptaes "k8s.io/apiserver/pkg/storage/value/encrypt/aes"
+	"gorm.io/gorm"
 )
 
 const (
@@ -77,25 +74,18 @@ func newLookupIDStub(t *testing.T) *lookupIDStub {
 func newLookupTestClient(t *testing.T) *Client {
 	t.Helper()
 
-	adapter.RegisterForTest(t, lookupTestProviderName, adapter.TestAdapter{
+	adapter.RegisterForTest(t, lookupTestProviderName, adaptertest.Adapter{
 		Users:  adapter.UserKeyGroupLookupID,
 		Groups: adapter.GroupKeyExternalID,
-		Shared: adapter.Rules{
+		SharedRules: adapter.Rules{
 			DeletesUsers: true,
 		},
 	})
 
 	c := newLifecycleTestClient(t)
-	block, err := aes.NewCipher(make([]byte, 32))
-	require.NoError(t, err)
-	transformer, err := encryptaes.NewGCMTransformer(block)
-	require.NoError(t, err)
-	c.encryptionConfig = &encryptionconfig.EncryptionConfiguration{
-		Transformers: map[schema.GroupResource]value.Transformer{
-			identityGroupResource: transformer,
-			userGroupResource:     transformer,
-		},
-	}
+	encryptResources(t, c, identityGroupResource, userGroupResource)
+	// SCIM matches the provider's users by group lookup ID only once the backfill of their hashes has run.
+	require.NoError(t, c.BackfillIdentityGroupLookupIDHashes(t.Context()))
 	return c
 }
 
@@ -148,16 +138,12 @@ func provisionLookupTestUser(t *testing.T, c *Client, conn *types.SCIMConnection
 	})
 }
 
-// identityCount returns the number of identities of the lookup test provider with the given provider user ID.
-func identityCount(t *testing.T, c *Client, providerUserID string) int64 {
+// pendingIdentityCount returns the number of identities that SCIM created for the person with the group lookup ID, which
+// wait for their first sign-in.
+func pendingIdentityCount(t *testing.T, c *Client, objectID string) int64 {
 	t.Helper()
 
-	var n int64
-	require.NoError(t, c.db.WithContext(t.Context()).Model(new(types.Identity)).
-		Where("auth_provider_namespace = ? AND auth_provider_name = ? AND hashed_provider_user_id = ?",
-			lookupTestProvider.Namespace, lookupTestProvider.Name, hash.String(providerUserID)).
-		Count(&n).Error)
-	return n
+	return countRows(t, c, new(types.Identity), "hashed_provider_user_id = ?", hash.String(adapter.PendingProviderUserID(objectID)))
 }
 
 func decryptedUser(t *testing.T, c *Client, userID uint) types.User {
@@ -176,7 +162,7 @@ func TestSCIMFirstUserIsClaimedAtFirstSignIn(t *testing.T) {
 	// SCIM creates the user before they ever sign in, with an identity that waits for their subject.
 	provisioned, err := provisionLookupTestUser(t, c, conn, "oid-1")
 	require.NoError(t, err)
-	require.EqualValues(t, 1, identityCount(t, c, adapter.PendingProviderUserID("oid-1")))
+	require.EqualValues(t, 1, pendingIdentityCount(t, c, "oid-1"))
 	require.Equal(t, "oid-1", decryptedUser(t, c, provisioned.UserID).Username)
 
 	// SCIM is enforced, which a claimed identity satisfies.
@@ -186,8 +172,8 @@ func TestSCIMFirstUserIsClaimedAtFirstSignIn(t *testing.T) {
 	user, err := lookupSignIn(t, c, stub, "sub-1", "oid-1")
 	require.NoError(t, err)
 	require.Equal(t, provisioned.UserID, user.ID)
-	require.Zero(t, identityCount(t, c, adapter.PendingProviderUserID("oid-1")))
-	require.EqualValues(t, 1, identityCount(t, c, "sub-1"))
+	require.Zero(t, pendingIdentityCount(t, c, "oid-1"))
+	require.EqualValues(t, 1, countRows(t, c, new(types.Identity), "hashed_provider_user_id = ?", hash.String("sub-1")))
 
 	stored := *storedIdentity(t, c, lookupTestProvider, "sub-1")
 	require.True(t, stored.Encrypted)
@@ -229,7 +215,7 @@ func TestSCIMCreateBindsTheIdentityThatSignInCreated(t *testing.T) {
 	provisioned, err := provisionLookupTestUser(t, c, conn, "oid-2")
 	require.NoError(t, err)
 	require.Equal(t, signedIn.ID, provisioned.UserID)
-	require.Zero(t, identityCount(t, c, adapter.PendingProviderUserID("oid-2")))
+	require.Zero(t, pendingIdentityCount(t, c, "oid-2"))
 
 	// A second create of the same person is a conflict.
 	_, err = provisionLookupTestUser(t, c, conn, "oid-2")
@@ -237,54 +223,35 @@ func TestSCIMCreateBindsTheIdentityThatSignInCreated(t *testing.T) {
 	require.ErrorAs(t, err, &conflict)
 }
 
-func TestSCIMManagedSignInFillsAMissingGroupLookupID(t *testing.T) {
-	c := newLookupTestClient(t)
-	stub := newLookupIDStub(t)
-
-	// An identity from before group lookup IDs were stored has none.
-	signedIn, err := lookupSignIn(t, c, stub, "sub-3", "oid-3")
-	require.NoError(t, err)
-	require.NoError(t, c.db.WithContext(t.Context()).Model(new(types.Identity)).Where("user_id = ?", signedIn.ID).
-		UpdateColumns(map[string]any{
-			"provider_group_lookup_id":        "",
-			"hashed_provider_group_lookup_id": "",
-			"encrypted":                       false,
-			"provider_username":               "sub-3",
-			"provider_user_id":                "sub-3",
-			"email":                           "sub-3@example.com",
-			"icon_url":                        "",
-		}).Error)
-
-	// Once SCIM manages the provider, the auth provider is not asked for groups, but the lookup ID is still filled
-	// in, so that SCIM can find the user.
-	conn := createLookupTestConnection(t, c)
-	_, err = lookupSignIn(t, c, stub, "sub-3", "oid-3")
-	require.NoError(t, err)
-	require.Equal(t, hash.String("oid-3"), storedIdentity(t, c, lookupTestProvider, "sub-3").HashedProviderGroupLookupID)
-
-	provisioned, err := provisionLookupTestUser(t, c, conn, "oid-3")
-	require.NoError(t, err)
-	require.Equal(t, signedIn.ID, provisioned.UserID)
-}
-
 func TestFirstSignInFailsWithoutAGroupLookupIDOnlyWithAConnection(t *testing.T) {
 	c := newLookupTestClient(t)
 	stub := newLookupIDStub(t)
 	stub.failing.Store(true)
 
-	// Without a connection, there is nothing to claim, so the sign-in goes ahead.
+	// Without a connection, there is nothing to claim, so the sign-in goes ahead. SCIM cannot be set up until the
+	// user signs in again, which stores the lookup ID.
 	_, err := lookupSignIn(t, c, stub, "sub-4", "oid-4")
 	require.NoError(t, err)
+	stub.failing.Store(false)
+	_, err = lookupSignIn(t, c, stub, "sub-4", "oid-4")
+	require.NoError(t, err)
+	stub.failing.Store(true)
 
-	// With one, a first sign-in that cannot learn its group lookup ID could duplicate a provisioned user.
+	// With a connection, a first sign-in that cannot learn its group lookup ID could duplicate a provisioned user.
 	createLookupTestConnection(t, c)
 	_, err = lookupSignIn(t, c, stub, "sub-5", "oid-5")
 	require.ErrorContains(t, err, "group lookup ID")
-	require.Zero(t, identityCount(t, c, "sub-5"))
+	require.Zero(t, countRows(t, c, new(types.Identity), "hashed_provider_user_id = ?", hash.String("sub-5")))
 
 	// A sign-in whose identity exists does not need it.
 	_, err = lookupSignIn(t, c, stub, "sub-4", "oid-4")
 	require.NoError(t, err)
+
+	// An auth provider that reports no ID is the same as one that cannot be reached.
+	stub.failing.Store(false)
+	_, err = lookupSignIn(t, c, stub, "sub-6", "")
+	require.ErrorContains(t, err, "group lookup ID")
+	require.Zero(t, countRows(t, c, new(types.Identity), "hashed_provider_user_id = ?", hash.String("sub-6")))
 }
 
 func TestSCIMCreateRefusesDuplicateUsersWithTheSameGroupLookupID(t *testing.T) {
@@ -322,6 +289,8 @@ func TestSCIMCreateStartsANewAccountForADeletedUser(t *testing.T) {
 	user, err := lookupSignIn(t, c, stub, "sub-7", "oid-7")
 	require.NoError(t, err)
 	require.Equal(t, provisioned.UserID, user.ID)
+	// The new account has the username that sign-in gives, not the group lookup ID.
+	require.Equal(t, "sub-7", decryptedUser(t, c, provisioned.UserID).Username)
 }
 
 func TestDeleteSCIMUser(t *testing.T) {
@@ -366,8 +335,8 @@ func TestDeleteSCIMUser(t *testing.T) {
 	require.NotNil(t, deleted.DeletedAt)
 	require.NotNil(t, deleted.DisabledAt)
 	require.Equal(t, types.UserDisabledReasonSCIMDeleted, deleted.DisabledReason)
-	require.Zero(t, rowCount(t, c, new(types.AuthToken), "user_id = ?", userID))
-	require.Zero(t, rowCount(t, c, new(types.GroupMemberships), "user_id = ?", userID))
+	require.Zero(t, countRows(t, c, new(types.AuthToken), "user_id = ?", userID))
+	require.Zero(t, countRows(t, c, new(types.GroupMemberships), "user_id = ?", userID))
 	_, err = c.GetSCIMUser(ctx, conn.ID, provisioned.ID)
 	var notFound *SCIMNotFoundError
 	require.ErrorAs(t, err, &notFound)
@@ -396,18 +365,28 @@ func TestDeleteSCIMUser(t *testing.T) {
 }
 
 func TestDeleteSCIMUserRefusesTheLastOwnerAndAdmin(t *testing.T) {
-	for name, role := range map[string]apitypes.Role{
-		"owner": apitypes.RoleOwner,
-		"admin": apitypes.RoleAdmin,
-	} {
-		t.Run(name, func(t *testing.T) {
+	tests := []struct {
+		name string
+		role apitypes.Role
+	}{
+		{
+			name: "owner",
+			role: apitypes.RoleOwner,
+		},
+		{
+			name: "admin",
+			role: apitypes.RoleAdmin,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			c := newLookupTestClient(t)
 			conn := createLookupTestConnection(t, c)
 
 			provisioned, err := provisionLookupTestUser(t, c, conn, "oid-9")
 			require.NoError(t, err)
 			require.NoError(t, c.db.WithContext(t.Context()).Model(new(types.User)).Where("id = ?", provisioned.UserID).UpdateColumns(map[string]any{
-				"role":         role,
+				"role":         tt.role,
 				"hashed_email": hash.String("oid-9@example.com"),
 			}).Error)
 
@@ -442,7 +421,11 @@ func TestAdminDeletionRecordsTheCleanupEvent(t *testing.T) {
 
 	// A refused deletion records nothing.
 	require.Error(t, c.DeleteUser(t.Context(), "999"))
-	require.Zero(t, rowCount(t, c, new(types.UserLifecycleEvent), "user_id = ?", 999))
+	require.Zero(t, countRows(t, c, new(types.UserLifecycleEvent), "user_id = ?", 999))
+
+	// Deleting the user again finds no user, and records no second cleanup.
+	require.ErrorIs(t, c.DeleteUser(t.Context(), strconv.FormatUint(uint64(user.ID), 10)), gorm.ErrRecordNotFound)
+	require.EqualValues(t, 1, countRows(t, c, new(types.UserLifecycleEvent), "user_id = ? AND type = ?", user.ID, types.UserLifecycleEventDeleted))
 }
 
 func TestSCIMGroupsBindByExternalID(t *testing.T) {
@@ -515,6 +498,23 @@ func TestSCIMGroupsBindByExternalID(t *testing.T) {
 	var invalid *SCIMInvalidValueError
 	require.ErrorAs(t, err, &invalid)
 
+	// So is an externalId that the adapter accepts but that cannot be part of a group ID, and no group has one.
+	for _, externalID := range []string{"a/b", "a\tb", strings.Repeat("g", 257)} {
+		_, err = c.CreateSCIMGroup(ctx, conn, SCIMGroupInput{
+			DisplayName: "Bad ID",
+			ExternalID:  externalID,
+		})
+		require.ErrorAs(t, err, &invalid, externalID)
+		found, total, err := c.ListSCIMGroups(ctx, conn, SCIMGroupFilter{
+			ExternalID: externalID,
+		}, SCIMPage{
+			Limit: 10,
+		}, false)
+		require.NoError(t, err)
+		require.Zero(t, total)
+		require.Empty(t, found)
+	}
+
 	// Unassigning the group before SCIM is enforced retires only the binding. Assigning it again binds the same
 	// group, which kept its grant.
 	require.NoError(t, c.DeleteSCIMGroup(ctx, conn, group.ID))
@@ -525,7 +525,7 @@ func TestSCIMGroupsBindByExternalID(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, legacyID, rebound.GroupID)
 	require.NotEqual(t, group.ID, rebound.ID)
-	require.EqualValues(t, 1, rowCount(t, c, new(types.GroupRoleAssignment), "group_name = ?", legacyID))
+	require.EqualValues(t, 1, countRows(t, c, new(types.GroupRoleAssignment), "group_name = ?", legacyID))
 }
 
 func TestSCIMGroupsByExternalIDWaitForDeletionsAndRefuseOtherProviders(t *testing.T) {
@@ -593,7 +593,7 @@ func TestSCIMGroupsByExternalIDWaitForDeletionsAndRefuseOtherProviders(t *testin
 			})
 			var conflict *SCIMConflictError
 			require.ErrorAs(t, err, &conflict)
-			require.Zero(t, rowCount(t, c, new(types.SCIMGroupBinding), "group_id = ?", tt.groupID))
+			require.Zero(t, countRows(t, c, new(types.SCIMGroupBinding), "group_id = ?", tt.groupID))
 		})
 	}
 }
@@ -619,11 +619,239 @@ func TestOktaGroupsHaveNoExternalID(t *testing.T) {
 	require.Empty(t, found)
 }
 
-// rowCount returns the number of rows of model that match query.
-func rowCount(t *testing.T, c *Client, model any, query string, args ...any) int64 {
+// clearGroupLookupID makes the identity of the lookup test provider with the given provider user ID look like one
+// from before group lookup IDs were stored: unencrypted, and without one.
+func clearGroupLookupID(t *testing.T, c *Client, sub string) {
 	t.Helper()
 
-	var n int64
-	require.NoError(t, c.db.WithContext(t.Context()).Model(model).Where(query, args...).Count(&n).Error)
-	return n
+	require.NoError(t, c.db.WithContext(t.Context()).Model(new(types.Identity)).
+		Where("auth_provider_namespace = ? AND auth_provider_name = ? AND hashed_provider_user_id = ?", lookupTestProvider.Namespace, lookupTestProvider.Name, hash.String(sub)).
+		UpdateColumns(map[string]any{
+			"provider_group_lookup_id":        "",
+			"hashed_provider_group_lookup_id": "",
+			"encrypted":                       false,
+			"provider_username":               sub,
+			"provider_user_id":                sub,
+			"email":                           sub + "@example.com",
+			"icon_url":                        "",
+		}).Error)
+}
+
+func TestSCIMConnectionsWaitForTheBackfillOfGroupLookupIDHashes(t *testing.T) {
+	adapter.RegisterForTest(t, lookupTestProviderName, adaptertest.Adapter{
+		Users: adapter.UserKeyGroupLookupID,
+	})
+	c := newLifecycleTestClient(t)
+	stub := newLookupIDStub(t)
+
+	// Until the backfill has run, SCIM could not find identities without the hash, so it is not set up.
+	_, _, err := c.CreateSCIMConnection(t.Context(), CreateSCIMConnectionOptions{
+		AuthProviderNamespace: lookupTestProvider.Namespace,
+		AuthProviderName:      lookupTestProvider.Name,
+		GroupIDPrefix:         lookupTestGroupPrefix,
+		Issuer:                "tenant",
+		Origin:                types.SCIMConnectionOriginMigrated,
+	})
+	var notReady *SCIMIdentitiesNotReadyError
+	require.ErrorAs(t, err, &notReady)
+
+	// An identity written without the hash after the backfill, as a replica without it writes one, gets it when SCIM
+	// is set up.
+	require.NoError(t, c.BackfillIdentityGroupLookupIDHashes(t.Context()))
+	_, err = lookupSignIn(t, c, stub, "sub-c", "oid-c")
+	require.NoError(t, err)
+	require.NoError(t, c.db.WithContext(t.Context()).Model(new(types.Identity)).
+		Where("hashed_provider_user_id = ?", hash.String("sub-c")).
+		UpdateColumn("hashed_provider_group_lookup_id", "").Error)
+
+	conn := createLookupTestConnection(t, c)
+	require.Equal(t, hash.String("oid-c"), storedIdentity(t, c, lookupTestProvider, "sub-c").HashedProviderGroupLookupID)
+	provisioned, err := provisionLookupTestUser(t, c, conn, "oid-c")
+	require.NoError(t, err)
+	require.Equal(t, storedIdentity(t, c, lookupTestProvider, "sub-c").UserID, provisioned.UserID)
+}
+
+func TestClaimRefusesATakenUsername(t *testing.T) {
+	c := newLookupTestClient(t)
+	stub := newLookupIDStub(t)
+	conn := createLookupTestConnection(t, c)
+
+	// Another user already has the username that the sign-in would give.
+	createLifecycleTestUser(t, c, "sub-d", lifecycleTestProvider)
+	_, err := provisionLookupTestUser(t, c, conn, "oid-d")
+	require.NoError(t, err)
+
+	_, err = lookupSignIn(t, c, stub, "sub-d", "oid-d")
+	var httpErr *apitypes.ErrHTTP
+	require.ErrorAs(t, err, &httpErr)
+	require.Equal(t, http.StatusConflict, httpErr.Code)
+	// Nothing was claimed.
+	require.EqualValues(t, 1, pendingIdentityCount(t, c, "oid-d"))
+}
+
+func TestClaimRefusesAnEncryptedIdentityWithoutEncryption(t *testing.T) {
+	c := newLookupTestClient(t)
+	stub := newLookupIDStub(t)
+	conn := createLookupTestConnection(t, c)
+	_, err := provisionLookupTestUser(t, c, conn, "oid-e")
+	require.NoError(t, err)
+
+	c.encryptionConfig = nil
+	_, err = lookupSignIn(t, c, stub, "sub-e", "oid-e")
+	require.ErrorContains(t, err, "encryption is not configured")
+	require.EqualValues(t, 1, pendingIdentityCount(t, c, "oid-e"))
+}
+
+func TestStoringAGroupLookupIDLeavesTheRestOfTheIdentityAlone(t *testing.T) {
+	c := newLifecycleTestClient(t)
+	stub := newLookupIDStub(t)
+	user := createLifecycleTestUser(t, c, "stale", lifecycleTestProvider)
+
+	// A copy of the identity read before something else moved it to another user.
+	identity := *storedIdentity(t, c, lifecycleTestProvider, "00u-stale")
+	identity.UserID = user.ID + 100
+
+	ctx := accesstoken.ContextWithAccessToken(auth.ContextWithProviderURL(t.Context(), stub.URL), "lookup-stale")
+	require.NoError(t, c.ensureProviderGroupLookupID(ctx, &identity))
+
+	stored := storedIdentity(t, c, lifecycleTestProvider, "00u-stale")
+	require.Equal(t, user.ID, stored.UserID)
+	require.Equal(t, hash.String("lookup-stale"), stored.HashedProviderGroupLookupID)
+}
+
+func TestDeletionDoesNotCountDisabledOwners(t *testing.T) {
+	c := newLifecycleTestClient(t)
+	ctx := t.Context()
+	deleted := createLifecycleTestUser(t, c, "owner-a", lifecycleTestProvider)
+	disabled := createLifecycleTestUser(t, c, "owner-b", lifecycleTestProvider)
+	require.NoError(t, c.db.WithContext(ctx).Model(new(types.User)).Where("id IN ?", []uint{deleted.ID, disabled.ID}).UpdateColumn("role", apitypes.RoleOwner).Error)
+	require.NoError(t, c.db.WithContext(ctx).Model(new(types.User)).Where("id = ?", disabled.ID).UpdateColumns(map[string]any{
+		"disabled_at":     time.Now(),
+		"disabled_reason": types.UserDisabledReasonSCIMInactive,
+	}).Error)
+
+	// The disabled Owner cannot act as one, so the other is the last.
+	var lastOwner *LastOwnerError
+	require.ErrorAs(t, c.DeleteUser(ctx, strconv.FormatUint(uint64(deleted.ID), 10)), &lastOwner)
+	require.Nil(t, storedLifecycleUser(t, c, deleted.ID).DeletedAt)
+}
+
+func TestSCIMConnectionsWaitForUsersWithoutAGroupLookupID(t *testing.T) {
+	c := newLookupTestClient(t)
+	stub := newLookupIDStub(t)
+	ctx := t.Context()
+
+	// Two users have identities without a group lookup ID, as users who have not signed in since Obot started storing
+	// it do. One of them is disabled. A third has one, and a fourth, who has none, is deleted.
+	missing, err := lookupSignIn(t, c, stub, "sub-m", "oid-m")
+	require.NoError(t, err)
+	disabled, err := lookupSignIn(t, c, stub, "sub-n", "oid-n")
+	require.NoError(t, err)
+	_, err = lookupSignIn(t, c, stub, "sub-o", "oid-o")
+	require.NoError(t, err)
+	deleted, err := lookupSignIn(t, c, stub, "sub-p", "oid-p")
+	require.NoError(t, err)
+	for _, sub := range []string{"sub-m", "sub-n", "sub-p"} {
+		clearGroupLookupID(t, c, sub)
+	}
+	require.NoError(t, c.db.WithContext(ctx).Model(new(types.User)).Where("id = ?", disabled.ID).UpdateColumns(map[string]any{
+		"disabled_at":     time.Now(),
+		"disabled_reason": types.UserDisabledReasonSCIMInactive,
+	}).Error)
+	require.NoError(t, c.DeleteUser(ctx, strconv.FormatUint(uint64(deleted.ID), 10)))
+
+	want := []SCIMUserWithoutGroupLookupID{
+		{
+			UserID: missing.ID,
+			Name:   "sub-m@example.com",
+		},
+		{
+			UserID:   disabled.ID,
+			Name:     "sub-n@example.com",
+			Disabled: true,
+		},
+	}
+	users, err := c.UsersWithoutGroupLookupID(ctx, lookupTestProvider)
+	require.NoError(t, err)
+	require.Equal(t, want, users)
+
+	// SCIM is not set up while they have none.
+	_, _, err = c.CreateSCIMConnection(ctx, CreateSCIMConnectionOptions{
+		AuthProviderNamespace: lookupTestProvider.Namespace,
+		AuthProviderName:      lookupTestProvider.Name,
+		GroupIDPrefix:         lookupTestGroupPrefix,
+		Issuer:                "tenant",
+		Origin:                types.SCIMConnectionOriginMigrated,
+	})
+	var missingErr *SCIMGroupLookupIDsMissingError
+	require.ErrorAs(t, err, &missingErr)
+	require.Equal(t, want, missingErr.Users)
+	require.Zero(t, countRows(t, c, new(types.SCIMConnection), "auth_provider_name = ?", lookupTestProvider.Name))
+
+	// Signing in stores the lookup ID. Once the disabled user is enabled and signs in too, SCIM can be set up.
+	_, err = lookupSignIn(t, c, stub, "sub-m", "oid-m")
+	require.NoError(t, err)
+	_, err = c.EnableUser(ctx, disabled.ID)
+	require.NoError(t, err)
+	_, err = lookupSignIn(t, c, stub, "sub-n", "oid-n")
+	require.NoError(t, err)
+	users, err = c.UsersWithoutGroupLookupID(ctx, lookupTestProvider)
+	require.NoError(t, err)
+	require.Empty(t, users)
+
+	conn := createLookupTestConnection(t, c)
+	provisioned, err := provisionLookupTestUser(t, c, conn, "oid-m")
+	require.NoError(t, err)
+	require.Equal(t, missing.ID, provisioned.UserID)
+}
+
+func TestUsersWithoutGroupLookupIDWaitForTheBackfill(t *testing.T) {
+	adapter.RegisterForTest(t, lookupTestProviderName, adaptertest.Adapter{
+		Users: adapter.UserKeyGroupLookupID,
+	})
+	c := newLifecycleTestClient(t)
+
+	_, err := c.UsersWithoutGroupLookupID(t.Context(), lookupTestProvider)
+	var notReady *SCIMIdentitiesNotReadyError
+	require.ErrorAs(t, err, &notReady)
+}
+
+func TestSignInNeverCreatesAnIdentityOrUserWithoutAGroupLookupIDOnceSCIMIsSetUp(t *testing.T) {
+	c := newLookupTestClient(t)
+	stub := newLookupIDStub(t)
+	ctx := t.Context()
+
+	// A user whose identity has no lookup ID is deleted, so it no longer blocks setting SCIM up, and the identity is
+	// still there because its cleanup has not run.
+	deleted, err := lookupSignIn(t, c, stub, "sub-q", "oid-q")
+	require.NoError(t, err)
+	clearGroupLookupID(t, c, "sub-q")
+	require.NoError(t, c.DeleteUser(ctx, strconv.FormatUint(uint64(deleted.ID), 10)))
+	createLookupTestConnection(t, c)
+
+	// The sign-in's transaction runs as though fetchSignInGroupLookupID had found no connection, and so no lookup ID
+	// was required before it: the connection was created while the sign-in fetched it, and the fetch failed.
+	signIn := func(sub string) error {
+		return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			_, err := c.ensureIdentity(ctx, tx, &types.Identity{
+				AuthProviderNamespace: lookupTestProvider.Namespace,
+				AuthProviderName:      lookupTestProvider.Name,
+				ProviderUsername:      sub,
+				ProviderUserID:        sub,
+				Email:                 sub + "@example.com",
+			}, "", apitypes.RoleUnknown, UserLimit{
+				Unlimited: true,
+			})
+			return err
+		})
+	}
+
+	// A first sign-in does not create an identity without one.
+	require.ErrorIs(t, signIn("sub-r"), errSignInWithoutGroupLookupID)
+	require.Zero(t, countRows(t, c, new(types.Identity), "hashed_provider_user_id = ?", hash.String("sub-r")))
+
+	// Nor does a sign-in to the deleted user's identity create a user for it.
+	users := countRows(t, c, new(types.User), "")
+	require.ErrorIs(t, signIn("sub-q"), errSignInToDeletedUserWithoutGroupLookupID)
+	require.Equal(t, users, countRows(t, c, new(types.User), ""))
 }

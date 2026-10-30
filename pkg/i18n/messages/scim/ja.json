@@ -1,6 +1,10 @@
 {
   "scim_no_provider": "認証プロバイダーが設定されていません。",
   "scim_unsupported": "{provider} は SCIM プロビジョニングをサポートしていません。",
+  "scim_identities_preparing": "Obot は SCIM プロビジョニング用の ID をまだ準備しています。数分後にもう一度お試しください。",
+  "scim_users_must_sign_in": "Obot がこれらの {provider} ユーザーの ID を記録していないため、SCIM は彼らを Obot アカウントと照合できず、新しいユーザーとしてプロビジョニングします ({count} 人): {users}。SCIM を有効にする前に、各ユーザーがブラウザーで Obot にサインインして ID を記録するか、Obot で削除される必要があります。",
+  "scim_disabled_users_must_be_enabled": "このうち無効なユーザー: {count} 人。無効なユーザーは、管理者が Obot で有効にするまでサインインできません。",
+  "scim_more_users": "、ほか {count} 人",
   "scim_switch_staged": "{provider} への切り替えが準備されています。先に完了するか破棄してください。",
   "scim_change_in_progress": "認証プロバイダーの設定を変更中です。完了するまでお待ちください。",
   "scim_already_provisions": "{provider} はすでに SCIM でユーザーとグループをプロビジョニングしています。",

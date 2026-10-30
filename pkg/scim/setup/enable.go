@@ -20,6 +20,11 @@ import (
 	kclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	// maxListedUsersWithoutGroupLookupID bounds the users that a blocker names.
+	maxListedUsersWithoutGroupLookupID = 20
+)
+
 // EnableBlockedError reports why SCIM cannot be enabled for an auth provider.
 type EnableBlockedError struct {
 	Blockers   []string
@@ -280,6 +285,16 @@ func EnableConnection(ctx context.Context, storage kclient.Reader, gateway *gcli
 				otherConnectionBlocker(ctx, storage, other),
 			},
 		}
+	} else if _, ok := errors.AsType[*gclient.SCIMIdentitiesNotReadyError](err); ok {
+		return nil, &EnableBlockedError{
+			Blockers: []string{
+				message(ctx, "scim_identities_preparing"),
+			},
+		}
+	} else if missing, ok := errors.AsType[*gclient.SCIMGroupLookupIDsMissingError](err); ok {
+		return nil, &EnableBlockedError{
+			Blockers: missingGroupLookupIDBlockers(ctx, displayName(ctx, authProvider), missing.Users),
+		}
 	} else if err != nil {
 		return nil, err
 	}
@@ -348,6 +363,20 @@ func planEnable(ctx context.Context, storage kclient.Reader, gateway *gclient.Cl
 		return plan, nil
 	}
 
+	if a.UserKey() == adapter.UserKeyGroupLookupID {
+		missing, err := gateway.UsersWithoutGroupLookupID(ctx, gclient.AuthProviderRef{
+			Namespace: authProvider.Namespace,
+			Name:      authProvider.Name,
+		})
+		if _, ok := errors.AsType[*gclient.SCIMIdentitiesNotReadyError](err); ok {
+			plan.blockers = append(plan.blockers, message(ctx, "scim_identities_preparing"))
+		} else if err != nil {
+			return nil, err
+		} else {
+			plan.blockers = append(plan.blockers, missingGroupLookupIDBlockers(ctx, name, missing)...)
+		}
+	}
+
 	if err := refusePendingCleanup(ctx, storage, authProvider); err != nil {
 		if pending, ok := errors.AsType[*CleanupPendingError](err); ok {
 			plan.blockers = append(plan.blockers, message(ctx, "scim_cleanup_pending", "provider", name, "cleanup", pending.CleanupName))
@@ -368,6 +397,38 @@ func planEnable(ctx context.Context, storage kclient.Reader, gateway *gclient.Cl
 			"provider", name))
 	}
 	return plan, nil
+}
+
+// missingGroupLookupIDBlockers reports the users whose identities have no group lookup ID, by which SCIM would match
+// them: each must sign in to Obot in a browser, which stores it, or be deleted. Disabled users cannot sign in until an
+// administrator enables them, which a second blocker says.
+func missingGroupLookupIDBlockers(ctx context.Context, provider string, users []gclient.SCIMUserWithoutGroupLookupID) []string {
+	if len(users) == 0 {
+		return nil
+	}
+
+	var disabled int
+	names := make([]string, 0, min(len(users), maxListedUsersWithoutGroupLookupID))
+	for i, user := range users {
+		if user.Disabled {
+			disabled++
+		}
+		if i < maxListedUsersWithoutGroupLookupID {
+			names = append(names, user.Name)
+		}
+	}
+	listed := strings.Join(names, ", ")
+	if more := len(users) - len(names); more > 0 {
+		listed += message(ctx, "scim_more_users", "count", fmt.Sprint(more))
+	}
+
+	blockers := []string{
+		message(ctx, "scim_users_must_sign_in", "count", fmt.Sprint(len(users)), "provider", provider, "users", listed),
+	}
+	if disabled > 0 {
+		blockers = append(blockers, message(ctx, "scim_disabled_users_must_be_enabled", "count", fmt.Sprint(disabled)))
+	}
+	return blockers
 }
 
 // otherConnectionBlocker reports that another auth provider has the installation's only SCIM connection.

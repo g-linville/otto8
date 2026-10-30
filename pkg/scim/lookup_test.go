@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/obot-platform/obot/pkg/scim/adapter"
+	"github.com/obot-platform/obot/pkg/scim/adapter/adaptertest"
 )
 
 const (
@@ -17,13 +18,17 @@ const (
 func (s *scimTest) enableLookupProvider() {
 	s.t.Helper()
 
-	adapter.RegisterForTest(s.t, lookupProviderName, adapter.TestAdapter{
+	adapter.RegisterForTest(s.t, lookupProviderName, adaptertest.Adapter{
 		Users:  adapter.UserKeyGroupLookupID,
 		Groups: adapter.GroupKeyExternalID,
-		Shared: adapter.Rules{
+		SharedRules: adapter.Rules{
 			DeletesUsers: true,
 		},
 	})
+	// SCIM matches the provider's users by group lookup ID only once the backfill of their hashes has run.
+	if err := s.gateway.BackfillIdentityGroupLookupIDHashes(s.t.Context()); err != nil {
+		s.t.Fatalf("failed to backfill: %v", err)
+	}
 	s.enableProvider(lookupProviderName, "lookup/", "tenant")
 }
 

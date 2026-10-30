@@ -988,6 +988,58 @@ func TestUserAddressesAndEnterpriseExtension(t *testing.T) {
 	s.do(http.MethodPost, "Users", notAnObject).expect(t, http.StatusBadRequest)
 }
 
+// TestProjectionsListOnlyTheExtensionsTheyReturn checks that schemas lists a schema extension only while the response
+// holds its object, as RFC 7643 section 3 requires.
+func TestProjectionsListOnlyTheExtensionsTheyReturn(t *testing.T) {
+	s := newSCIMTest(t)
+	s.enable()
+
+	body := scimUser("user@example.com", "00u-user")
+	body[enterpriseUserSchema] = map[string]any{
+		"department": "Engineering",
+	}
+	user := s.do(http.MethodPost, "Users", body).expect(t, http.StatusCreated).id()
+
+	tests := []struct {
+		name        string
+		query       string
+		wantSchemas []any
+	}{
+		{
+			name:        "the whole resource",
+			wantSchemas: []any{userSchema, enterpriseUserSchema},
+		},
+		{
+			name:        "the extension excluded",
+			query:       "excludedAttributes=" + url.QueryEscape(enterpriseUserSchema),
+			wantSchemas: []any{userSchema},
+		},
+		{
+			name:        "the extension's only attribute excluded",
+			query:       "excludedAttributes=" + url.QueryEscape(enterpriseUserSchema+":department"),
+			wantSchemas: []any{userSchema},
+		},
+		{
+			name:        "only core attributes selected",
+			query:       "attributes=userName",
+			wantSchemas: []any{userSchema},
+		},
+		{
+			name:        "an extension attribute selected",
+			query:       "attributes=" + url.QueryEscape(enterpriseUserSchema+":department"),
+			wantSchemas: []any{userSchema, enterpriseUserSchema},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := s.do(http.MethodGet, "Users/"+user+"?"+tt.query, nil).expect(t, http.StatusOK).body
+			if !reflect.DeepEqual(got["schemas"], tt.wantSchemas) {
+				t.Fatalf("schemas = %#v, want %#v", got["schemas"], tt.wantSchemas)
+			}
+		})
+	}
+}
+
 func TestExternalIDFilters(t *testing.T) {
 	s := newSCIMTest(t)
 	s.enable()
@@ -1042,7 +1094,7 @@ func TestExternalIDFilters(t *testing.T) {
 		t.Fatalf("an inactive user's externalId found %v, want the user", found)
 	}
 
-	// A group's externalId is accepted. No adapter binds groups by it yet, so no group matches it.
+	// A group's externalId is accepted. Okta groups bind by name, so no group matches it.
 	group := scimGroup("team", user)
 	group["externalId"] = "00g-team"
 	s.do(http.MethodPost, "Groups", group).expect(t, http.StatusCreated)

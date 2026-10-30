@@ -65,6 +65,11 @@ type Adapter interface {
 	// identity of the connection's auth provider that stores the same ID.
 	NativeUserID(user User) (string, error)
 
+	// NativeUserIDFromExternalID returns the native user ID that a SCIM user's externalId holds, as NativeUserID would
+	// for a user with that externalId, without the checks of other attributes. It answers externalId filters. It
+	// returns an *InvalidUserError for an externalId that holds none.
+	NativeUserIDFromExternalID(externalID string) (string, error)
+
 	// UserKey returns which identity column a SCIM user's native ID matches.
 	UserKey() UserKey
 

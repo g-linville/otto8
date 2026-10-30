@@ -7,8 +7,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"uuid"
 
+	"github.com/obot-platform/obot/pkg/auth"
 	"github.com/obot-platform/obot/pkg/gateway/types"
 	"github.com/obot-platform/obot/pkg/scim/adapter"
 	"gorm.io/gorm"
@@ -24,6 +26,10 @@ const (
 	// the policies of each namespace once. A failed cleanup keeps its claim, so this is also the delay before it is
 	// retried.
 	scimGroupSubjectCleanupClaimDuration = 5 * time.Minute
+
+	// maxNativeGroupIDLength bounds the length in bytes of the native group IDs that become part of group IDs. Native
+	// group IDs are far shorter, such as Entra's 36-byte object IDs.
+	maxNativeGroupIDLength = 256
 )
 
 // SCIMGroupInput holds the writable attributes of a SCIM group, as a create or a full replacement sends them.
@@ -99,12 +105,10 @@ func (c *Client) ListSCIMGroups(ctx context.Context, conn *types.SCIMConnection,
 			// Groups that bind by name have no externalId.
 			return nil, 0, nil
 		}
-		nativeGroupID, err := a.NativeGroupIDFromExternalID(filter.ExternalID)
-		if err != nil {
-			// No group has an externalId that the adapter refuses.
+		if groupID, err = groupIDFromExternalID(a, conn, filter.ExternalID); err != nil {
+			// No group has an externalId that cannot identify a group.
 			return nil, 0, nil
 		}
-		groupID = a.NewGroupID(conn.GroupIDPrefix, "", nativeGroupID)
 	}
 
 	if err := c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -192,10 +196,11 @@ func (c *Client) CreateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 		}
 	}
 
-	var nativeGroupID string
+	// For an adapter that binds groups by externalId, the group's ID is the one the externalId gives.
+	var groupID string
 	if a.GroupKey() == adapter.GroupKeyExternalID {
-		if nativeGroupID, err = a.NativeGroupIDFromExternalID(input.ExternalID); err != nil {
-			return nil, scimAdapterError(err)
+		if groupID, err = groupIDFromExternalID(a, conn, input.ExternalID); err != nil {
+			return nil, err
 		}
 	}
 
@@ -225,7 +230,7 @@ func (c *Client) CreateSCIMGroup(ctx context.Context, conn *types.SCIMConnection
 			Revision:              1,
 		}
 		if a.GroupKey() == adapter.GroupKeyExternalID {
-			err = bindSCIMGroupByIDTx(tx, conn, binding, a.NewGroupID(conn.GroupIDPrefix, binding.ID, nativeGroupID), input.DisplayName)
+			err = bindSCIMGroupByIDTx(tx, conn, binding, groupID, input.DisplayName)
 		} else {
 			err = bindSCIMGroupByNameTx(tx, conn, a, binding, input.DisplayName)
 		}
@@ -992,6 +997,31 @@ func scimGroupFromRow(conn *types.SCIMConnection, row scimGroupRow, members map[
 		}
 	}
 	return group
+}
+
+// groupIDFromExternalID returns the Obot ID of the group whose externalId is externalID, for an adapter that binds
+// groups by externalId, or a *SCIMInvalidValueError when the externalId cannot identify a group.
+//
+// The adapter decides which externalIds are valid. This only keeps an adapter that accepts too much from creating
+// group IDs that its auth provider never would: the native group ID must be neither empty nor longer than
+// maxNativeGroupIDLength bytes, have no slash, whitespace, or unprintable character, and be the one that the group ID
+// carries, under the connection's prefix. It checks what makes an ID safe to store, and infers nothing about the
+// identity provider from its shape.
+func groupIDFromExternalID(a adapter.Adapter, conn *types.SCIMConnection, externalID string) (string, error) {
+	nativeGroupID, err := a.NativeGroupIDFromExternalID(externalID)
+	if err != nil {
+		return "", scimAdapterError(err)
+	}
+	groupID := a.NewGroupID(conn.GroupIDPrefix, "", nativeGroupID)
+	if nativeGroupID == "" || len(nativeGroupID) > maxNativeGroupIDLength ||
+		strings.ContainsFunc(nativeGroupID, func(r rune) bool { return r == '/' || unicode.IsSpace(r) || !unicode.IsPrint(r) }) ||
+		auth.ValidateGroupID(groupID, conn.GroupIDPrefix) != nil ||
+		a.NativeGroupID(conn.GroupIDPrefix, groupID) != nativeGroupID {
+		return "", &SCIMInvalidValueError{
+			Message: "externalId cannot identify an Obot group",
+		}
+	}
+	return groupID, nil
 }
 
 // scimGroupExternalID returns the externalId of the group with the given Obot ID: the native group ID that the ID

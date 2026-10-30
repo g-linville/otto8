@@ -103,6 +103,15 @@ func (c *Client) CreateSCIMConnection(ctx context.Context, opts CreateSCIMConnec
 	if opts.GroupIDPrefix == "" {
 		return nil, "", fmt.Errorf("auth provider %s/%s declares no group ID prefix", opts.AuthProviderNamespace, opts.AuthProviderName)
 	}
+	if a.UserKey() == adapter.UserKeyGroupLookupID {
+		// SCIM finds the provider's users by the hashes of their group lookup IDs from now on.
+		if err := c.prepareIdentitiesForLookupMatching(ctx, AuthProviderRef{
+			Namespace: opts.AuthProviderNamespace,
+			Name:      opts.AuthProviderName,
+		}); err != nil {
+			return nil, "", err
+		}
+	}
 	switch opts.Origin {
 	case types.SCIMConnectionOriginSCIMFirst, types.SCIMConnectionOriginMigrated:
 	default:
@@ -150,6 +159,23 @@ func (c *Client) CreateSCIMConnection(ctx context.Context, opts CreateSCIMConnec
 		if len(existing) > 0 {
 			return &SCIMConnectionExistsError{
 				ConnectionID: existing[0].ID,
+			}
+		}
+
+		// Under the exclusive mode lock, no sign-in is creating an identity, so none can appear without a group lookup
+		// ID once this check passes. Sign-ins after it require one.
+		if a.UserKey() == adapter.UserKeyGroupLookupID {
+			missing, err := c.usersWithoutGroupLookupIDTx(ctx, tx, AuthProviderRef{
+				Namespace: opts.AuthProviderNamespace,
+				Name:      opts.AuthProviderName,
+			})
+			if err != nil {
+				return err
+			}
+			if len(missing) > 0 {
+				return &SCIMGroupLookupIDsMissingError{
+					Users: missing,
+				}
 			}
 		}
 

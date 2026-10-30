@@ -15,16 +15,20 @@ import (
 	encryptaes "k8s.io/apiserver/pkg/storage/value/encrypt/aes"
 )
 
-// encryptIdentities makes c encrypt identities with a real transformer.
-func encryptIdentities(t *testing.T, c *Client) {
+// encryptResources makes c encrypt the given resources with a real transformer.
+func encryptResources(t *testing.T, c *Client, resources ...schema.GroupResource) {
 	t.Helper()
 
 	block, err := aes.NewCipher(make([]byte, 32))
 	require.NoError(t, err)
 	transformer, err := encryptaes.NewGCMTransformer(block)
 	require.NoError(t, err)
+	transformers := make(map[schema.GroupResource]value.Transformer, len(resources))
+	for _, resource := range resources {
+		transformers[resource] = transformer
+	}
 	c.encryptionConfig = &encryptionconfig.EncryptionConfiguration{
-		Transformers: map[schema.GroupResource]value.Transformer{identityGroupResource: transformer},
+		Transformers: transformers,
 	}
 }
 
@@ -76,7 +80,7 @@ func TestEncryptIdentitySetsTheHashedGroupLookupID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := newTestClient(t)
 			if tt.encrypt {
-				encryptIdentities(t, c)
+				encryptResources(t, c, identityGroupResource)
 			}
 			identity := &gatewaytypes.Identity{
 				ProviderGroupLookupID: tt.lookupID,
@@ -91,7 +95,7 @@ func TestEncryptIdentitySetsTheHashedGroupLookupID(t *testing.T) {
 
 func TestIdentityWritesStoreTheHashedGroupLookupID(t *testing.T) {
 	c := newLifecycleTestClient(t)
-	encryptIdentities(t, c)
+	encryptResources(t, c, identityGroupResource)
 	_, srv := newAuthProviderStub(t)
 	ctx := accesstoken.ContextWithAccessToken(auth.ContextWithProviderGroupIDPrefix(auth.ContextWithProviderURL(t.Context(), srv.URL), "okta/"), "access-token")
 	unlimited := UserLimit{
@@ -134,7 +138,7 @@ func testBackfillIdentityGroupLookupIDHashes(t *testing.T, c *Client) {
 	t.Helper()
 
 	insertIdentity(t, c, "00u-plain", "lookup-plain")
-	encryptIdentities(t, c)
+	encryptResources(t, c, identityGroupResource)
 	for _, id := range []string{"00u-a", "00u-b", "00u-c", "00u-d", "00u-e"} {
 		insertIdentity(t, c, id, "lookup-"+id)
 	}
@@ -146,7 +150,7 @@ func testBackfillIdentityGroupLookupIDHashes(t *testing.T, c *Client) {
 		UpdateColumn("hashed_provider_group_lookup_id", "kept").Error)
 
 	// A batch smaller than the identities makes the backfill page through them.
-	require.NoError(t, c.backfillIdentityGroupLookupIDHashes(t.Context(), 2))
+	require.NoError(t, c.backfillIdentityGroupLookupIDHashes(t.Context(), 2, nil))
 
 	want := map[string]string{
 		"00u-plain":  hash.String("lookup-plain"),
@@ -167,7 +171,7 @@ func testBackfillIdentityGroupLookupIDHashes(t *testing.T, c *Client) {
 	check()
 
 	// Running it again changes nothing.
-	require.NoError(t, c.backfillIdentityGroupLookupIDHashes(t.Context(), 2))
+	require.NoError(t, c.backfillIdentityGroupLookupIDHashes(t.Context(), 2, nil))
 	check()
 }
 
@@ -185,7 +189,7 @@ func TestBackfillIdentityGroupLookupIDHashesRunsOnce(t *testing.T) {
 
 func TestBackfillIdentityGroupLookupIDHashesRefusesEncryptedIdentitiesWithoutEncryption(t *testing.T) {
 	c := newTestClient(t)
-	encryptIdentities(t, c)
+	encryptResources(t, c, identityGroupResource)
 	insertIdentity(t, c, "00u-encrypted", "lookup-encrypted")
 	c.encryptionConfig = nil
 
@@ -193,7 +197,7 @@ func TestBackfillIdentityGroupLookupIDHashesRefusesEncryptedIdentitiesWithoutEnc
 	require.Empty(t, storedIdentity(t, c, lifecycleTestProvider, "00u-encrypted").HashedProviderGroupLookupID)
 
 	// The migration is not recorded, so it runs again once encryption is configured.
-	encryptIdentities(t, c)
+	encryptResources(t, c, identityGroupResource)
 	require.NoError(t, c.BackfillIdentityGroupLookupIDHashes(t.Context()))
 	require.Equal(t, hash.String("lookup-encrypted"), storedIdentity(t, c, lifecycleTestProvider, "00u-encrypted").HashedProviderGroupLookupID)
 }

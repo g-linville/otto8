@@ -2,6 +2,7 @@ package scim
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -14,6 +15,9 @@ type projection struct {
 	selected   bool
 	attributes []attrPath
 	excluded   []attrPath
+	// extensions are the URNs of the resource's schema extensions, which schemas lists only while the response holds
+	// their objects.
+	extensions []string
 }
 
 func parseProjection(schema *resourceSchema, q url.Values) (*projection, error) {
@@ -25,10 +29,15 @@ func parseProjection(schema *resourceSchema, q url.Values) (*projection, error) 
 	if err != nil {
 		return nil, err
 	}
+	extensions := make([]string, 0, len(schema.extensions))
+	for _, ext := range schema.extensions {
+		extensions = append(extensions, ext.ID)
+	}
 	return &projection{
 		selected:   strings.TrimSpace(q.Get("attributes")) != "",
 		attributes: attributes,
 		excluded:   excluded,
+		extensions: extensions,
 	}, nil
 }
 
@@ -123,7 +132,7 @@ func (p *projection) apply(resource map[string]any) map[string]any {
 			}
 			to[a.Name] = mergeSubAttribute(to[a.Name], v, a.Sub)
 		}
-		return out
+		return p.withoutAbsentExtensions(out)
 	}
 
 	for _, e := range p.excluded {
@@ -149,6 +158,25 @@ func (p *projection) apply(resource map[string]any) map[string]any {
 			}
 		}
 	}
+	return p.withoutAbsentExtensions(resource)
+}
+
+// withoutAbsentExtensions removes from the resource's schemas the extensions whose objects the projection left out.
+func (p *projection) withoutAbsentExtensions(resource map[string]any) map[string]any {
+	schemas, ok := resource["schemas"].([]any)
+	if !ok {
+		return resource
+	}
+	kept := make([]any, 0, len(schemas))
+	for _, schema := range schemas {
+		if urn, _ := schema.(string); slices.Contains(p.extensions, urn) {
+			if _, present := resource[urn]; !present {
+				continue
+			}
+		}
+		kept = append(kept, schema)
+	}
+	resource["schemas"] = kept
 	return resource
 }
 

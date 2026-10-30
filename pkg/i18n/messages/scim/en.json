@@ -1,6 +1,10 @@
 {
   "scim_no_provider": "No auth provider is configured.",
   "scim_unsupported": "{provider} does not support SCIM provisioning.",
+  "scim_identities_preparing": "Obot is still preparing identities for SCIM provisioning. Try again in a few minutes.",
+  "scim_users_must_sign_in": "SCIM cannot match these users of {provider} to their Obot accounts, because Obot has not recorded their IDs, so it would provision them as new users ({count}): {users}. Before SCIM can be enabled, each must sign in to Obot in a browser, which records the ID, or be deleted in Obot.",
+  "scim_disabled_users_must_be_enabled": "Disabled users among them: {count}. A disabled user cannot sign in until an administrator enables them in Obot.",
+  "scim_more_users": ", and {count} more",
   "scim_switch_staged": "A switch to {provider} is staged. Complete or discard it first.",
   "scim_change_in_progress": "A change to the auth provider configuration is in progress. Wait for it to finish.",
   "scim_already_provisions": "{provider} already provisions users and groups through SCIM.",

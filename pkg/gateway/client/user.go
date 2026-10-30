@@ -28,6 +28,10 @@ var (
 		Group:    "obot.obot.ai",
 		Resource: "users",
 	}
+
+	// userEncryptedColumns are the columns that encryptUser writes, for an update that writes a user encrypted again
+	// without the rest of its row. It must list every column that encryptUser writes.
+	userEncryptedColumns = []string{"username", "email", "icon_url", "display_name", "original_email", "original_username", "encrypted"}
 )
 
 func (c *Client) UserFromToken(ctx context.Context, token string) (*types.User, string, string, string, []string, error) {
@@ -231,8 +235,9 @@ func (c *Client) DeleteUser(ctx context.Context, userID string) error {
 			return err
 		}
 
+		// A deleted user is not deleted again, which would rename them again and repeat their cleanup.
 		existingUser := new(types.User)
-		if err := tx.Where("id = ?", userID).First(existingUser).Error; err != nil {
+		if err := tx.Where("id = ? AND deleted_at IS NULL", userID).First(existingUser).Error; err != nil {
 			return err
 		}
 
@@ -241,6 +246,9 @@ func (c *Client) DeleteUser(ctx context.Context, userID string) error {
 			return err
 		}
 
+		if err := refuseLastOwnerOrAdminTx(tx, existingUser); err != nil {
+			return err
+		}
 		return c.deleteUserTx(ctx, tx, existingUser)
 	}); err != nil {
 		return err
@@ -250,23 +258,17 @@ func (c *Client) DeleteUser(ctx context.Context, userID string) error {
 	return nil
 }
 
-// deleteUserTx deletes existingUser, which was read in tx and is not decrypted, within tx. It refuses to delete the
-// last Owner, or the last Admin when there is no other Owner, with *LastOwnerError or *LastAdminError. It records the
-// event whose delivery removes what the user owns, so the caller must kick lifecycle delivery after committing.
-func (c *Client) deleteUserTx(ctx context.Context, tx *gorm.DB, existingUser *types.User) error {
-	// Decrypt user to get original values before soft delete
-	if err := c.decryptUser(ctx, existingUser); err != nil {
-		return fmt.Errorf("failed to decrypt user: %w", err)
-	}
-
-	// Check if we're deleting a user with Owner or Admin role
+// refuseLastOwnerOrAdminTx refuses to delete user when they are the last Owner, or the last Admin when there is no
+// other Owner, with *LastOwnerError or *LastAdminError. user need not be decrypted.
+func refuseLastOwnerOrAdminTx(tx *gorm.DB, user *types.User) error {
 	// We filter out empty email users here, because that is the bootstrap user.
-	// Also exclude already soft-deleted users and the current user from the count.
-	if existingUser.Role.HasRole(types2.RoleOwner) {
+	// Also exclude soft-deleted and disabled users, who cannot act as Owners or Admins, and the current user from the
+	// count.
+	if user.Role.HasRole(types2.RoleOwner) {
 		// Can't delete the user if they're an owner and there are no other owners
 		var ownerCount int64
-		if err := tx.Model(new(types.User)).Where("id != ? AND (role & ?) != 0 AND hashed_email != '' AND deleted_at IS NULL",
-			existingUser.ID,
+		if err := tx.Model(new(types.User)).Where("id != ? AND (role & ?) != 0 AND hashed_email != '' AND deleted_at IS NULL AND disabled_at IS NULL",
+			user.ID,
 			types2.RoleOwner,
 		).Count(&ownerCount).Error; err != nil {
 			return err
@@ -275,11 +277,11 @@ func (c *Client) deleteUserTx(ctx context.Context, tx *gorm.DB, existingUser *ty
 		if ownerCount == 0 {
 			return new(LastOwnerError)
 		}
-	} else if existingUser.Role.HasRole(types2.RoleAdmin) {
+	} else if user.Role.HasRole(types2.RoleAdmin) {
 		// Can't delete the user if they're an admin and there are no other owners or admins
 		var adminCount int64
-		if err := tx.Model(new(types.User)).Where("id != ? AND ((role & ?) != 0 OR (role & ?) != 0) AND hashed_email != '' AND deleted_at IS NULL",
-			existingUser.ID,
+		if err := tx.Model(new(types.User)).Where("id != ? AND ((role & ?) != 0 OR (role & ?) != 0) AND hashed_email != '' AND deleted_at IS NULL AND disabled_at IS NULL",
+			user.ID,
 			types2.RoleOwner,
 			types2.RoleAdmin,
 		).Count(&adminCount).Error; err != nil {
@@ -289,6 +291,17 @@ func (c *Client) deleteUserTx(ctx context.Context, tx *gorm.DB, existingUser *ty
 		if adminCount == 0 {
 			return new(LastAdminError)
 		}
+	}
+	return nil
+}
+
+// deleteUserTx deletes existingUser, which was read in tx and is not decrypted, within tx. Callers that act for an
+// administrator or an identity provider check refuseLastOwnerOrAdminTx first. It records the event whose delivery
+// removes what the user owns, so the caller must kick lifecycle delivery after committing.
+func (c *Client) deleteUserTx(ctx context.Context, tx *gorm.DB, existingUser *types.User) error {
+	// Decrypt user to get original values before soft delete
+	if err := c.decryptUser(ctx, existingUser); err != nil {
+		return fmt.Errorf("failed to decrypt user: %w", err)
 	}
 
 	// Soft delete: set timestamp and preserve original values
@@ -382,11 +395,12 @@ func (c *Client) UpdateUser(ctx context.Context, actingUserCanChangeRole bool, u
 					}
 
 					// We filter out empty email users here, because that is the bootstrap user.
-					// Also exclude soft-deleted users and the current user from the count.
+					// Also exclude soft-deleted and disabled users, who cannot act as Owners or Admins, and the current
+					// user from the count.
 					if removingOwner {
 						// Can't change role from owner if there are no other owners
 						var ownerCount int64
-						if err := tx.Model(new(types.User)).Where("id != ? AND (role & ?) != 0 AND hashed_email != '' AND deleted_at IS NULL",
+						if err := tx.Model(new(types.User)).Where("id != ? AND (role & ?) != 0 AND hashed_email != '' AND deleted_at IS NULL AND disabled_at IS NULL",
 							userID,
 							types2.RoleOwner,
 						).Count(&ownerCount).Error; err != nil {
@@ -399,7 +413,7 @@ func (c *Client) UpdateUser(ctx context.Context, actingUserCanChangeRole bool, u
 					} else if removingAdmin {
 						// Can't change role from admin if there are no other owners or admins
 						var adminCount int64
-						if err := tx.Model(new(types.User)).Where("id != ? AND ((role & ?) != 0 OR (role & ?) != 0) AND hashed_email != '' AND deleted_at IS NULL",
+						if err := tx.Model(new(types.User)).Where("id != ? AND ((role & ?) != 0 OR (role & ?) != 0) AND hashed_email != '' AND deleted_at IS NULL AND disabled_at IS NULL",
 							userID,
 							types2.RoleOwner,
 							types2.RoleAdmin,
